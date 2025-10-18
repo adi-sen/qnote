@@ -37,16 +37,19 @@ pub enum Commands {
         /// Filter by tag
         #[arg(short, long)]
         tag: Option<String>,
+        /// Compact one-line format (good for piping to fzf)
+        #[arg(short, long)]
+        oneline: bool,
     },
-    /// Show a specific note
+    /// Show a specific note (by ID or title pattern)
     Show {
-        /// Note ID
-        id: i64,
+        /// Note ID or title pattern to search
+        id_or_title: String,
     },
-    /// Edit a note
+    /// Edit a note (by ID or title pattern)
     Edit {
-        /// Note ID
-        id: i64,
+        /// Note ID or title pattern to search
+        id_or_title: String,
         /// New title
         #[arg(short, long)]
         title: Option<String>,
@@ -57,10 +60,13 @@ pub enum Commands {
         #[arg(short = 'g', long)]
         tags: Option<String>,
     },
-    /// Delete a note
+    /// Delete a note (by ID or title pattern)
     Delete {
-        /// Note ID
-        id: i64,
+        /// Note ID or title pattern to search
+        id_or_title: String,
+        /// Skip confirmation prompt
+        #[arg(short, long)]
+        yes: bool,
     },
     /// Search notes
     Search {
@@ -85,7 +91,7 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
             let id = db.create_note(&note)?;
             println!("Note created with ID: {}", id);
         }
-        Commands::List { tag } => {
+        Commands::List { tag, oneline } => {
             let notes = db.list_notes()?;
             let filtered: Vec<_> = if let Some(tag_filter) = tag {
                 notes
@@ -98,7 +104,18 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
 
             if filtered.is_empty() {
                 println!("No notes found.");
+            } else if oneline {
+                // Compact format for piping to fzf or other tools
+                for note in filtered {
+                    let tags_str = if note.tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [{}]", note.tags.join(", "))
+                    };
+                    println!("{}\t{}{}", note.id.unwrap(), note.title, tags_str);
+                }
             } else {
+                // Normal format
                 for note in filtered {
                     println!("\n[{}] {}", note.id.unwrap(), note.title);
                     println!("Tags: {}", note.tags.join(", "));
@@ -106,7 +123,8 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
                 }
             }
         }
-        Commands::Show { id } => {
+        Commands::Show { id_or_title } => {
+            let id = resolve_note(db, &id_or_title)?;
             if let Some(note) = db.get_note(id)? {
                 println!("\n{}", "=".repeat(50));
                 println!("Title: {}", note.title);
@@ -116,16 +134,15 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
                 println!("{}", "=".repeat(50));
                 println!("\n{}", note.content);
                 println!();
-            } else {
-                println!("Note not found.");
             }
         }
         Commands::Edit {
-            id,
+            id_or_title,
             title,
             content,
             tags,
         } => {
+            let id = resolve_note(db, &id_or_title)?;
             if let Some(note) = db.get_note(id)? {
                 let new_title = title.unwrap_or(note.title);
                 let new_content = content.unwrap_or(note.content);
@@ -133,13 +150,24 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
 
                 db.update_note(id, new_title, new_content, new_tags)?;
                 println!("Note {} updated.", id);
-            } else {
-                println!("Note not found.");
             }
         }
-        Commands::Delete { id } => {
-            db.delete_note(id)?;
-            println!("Note {} deleted.", id);
+        Commands::Delete { id_or_title, yes } => {
+            let id = resolve_note(db, &id_or_title)?;
+            let note = db.get_note(id)?;
+
+            if let Some(note) = note {
+                // Show what will be deleted
+                eprintln!("Found: [{}] {}", id, note.title);
+
+                // Ask for confirmation unless --yes flag is provided
+                if yes || confirm("Delete this note?") {
+                    db.delete_note(id)?;
+                    println!("Note {} deleted.", id);
+                } else {
+                    println!("Deletion cancelled.");
+                }
+            }
         }
         Commands::Search { query } => {
             let notes = db.search_notes(&query)?;
@@ -173,4 +201,50 @@ fn parse_tags(tags: Option<String>) -> Vec<String> {
             .collect()
     })
     .unwrap_or_default()
+}
+
+/// Resolves a note by ID or title pattern.
+/// Returns the note ID if found, or an error if ambiguous/not found.
+fn resolve_note(db: &Database, id_or_title: &str) -> Result<i64> {
+    // Try parsing as ID first
+    if let Ok(id) = id_or_title.parse::<i64>() {
+        // Verify the ID exists
+        if db.get_note(id)?.is_some() {
+            return Ok(id);
+        } else {
+            anyhow::bail!("Note with ID {} not found", id);
+        }
+    }
+
+    // Search by title pattern (case-insensitive)
+    let all_notes = db.list_notes()?;
+    let matches: Vec<_> = all_notes
+        .into_iter()
+        .filter(|n| n.title.to_lowercase().contains(&id_or_title.to_lowercase()))
+        .collect();
+
+    match matches.len() {
+        0 => anyhow::bail!("No notes found matching '{}'", id_or_title),
+        1 => Ok(matches[0].id.unwrap()),
+        _ => {
+            eprintln!("Multiple notes found matching '{}':", id_or_title);
+            for note in &matches {
+                eprintln!("  [{}] {}", note.id.unwrap(), note.title);
+            }
+            anyhow::bail!("Please specify a more specific pattern or use the exact ID")
+        }
+    }
+}
+
+/// Prompts user for confirmation. Returns true if user confirms.
+fn confirm(prompt: &str) -> bool {
+    use std::io::{self, Write};
+
+    print!("{} (y/N): ", prompt);
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
