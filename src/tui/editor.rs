@@ -4,7 +4,12 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use std::{env, fs, io, process::Command};
+use std::{
+    env, fs,
+    io::{self, Write},
+    path::PathBuf,
+    process::Command,
+};
 
 /// Returns the user's preferred editor from environment variables.
 /// Checks $EDITOR, falling back to vi if not set.
@@ -12,21 +17,28 @@ fn get_editor() -> String {
     env::var("EDITOR").unwrap_or_else(|_| "vi".to_string())
 }
 
+/// Returns a consistent temp file path for qnote editing.
+/// Reusing the same path avoids filesystem overhead and is faster than creating new files.
+fn get_temp_path() -> PathBuf {
+    env::temp_dir().join("qnote-edit.md")
+}
+
 /// Opens the user's editor with an empty template for creating a new note.
 /// Returns None if the user cancels or creates an empty note.
 /// Returns Some((title, content, tags)) if a valid note is created.
 pub fn open_editor_for_new_note() -> Result<Option<(String, String, Vec<String>)>> {
-    let template = "";
+    let temp_path = get_temp_path();
 
-    // Create a temporary file with a unique name based on process ID
-    let temp_path = env::temp_dir().join(format!("qnote-{}.md", std::process::id()));
-    fs::write(&temp_path, template)?;
+    // Use write! instead of fs::write for consistency
+    let mut file = fs::File::create(&temp_path)?;
+    // Empty template - just create empty file
+    file.flush()?;
+    drop(file);
 
     open_editor(&temp_path)?;
 
     // Read and parse the edited content
     let content = fs::read_to_string(&temp_path)?;
-    fs::remove_file(&temp_path).ok();
 
     parse_note_file(&content)
 }
@@ -36,37 +48,39 @@ pub fn open_editor_for_new_note() -> Result<Option<(String, String, Vec<String>)
 /// Returns None if the user cancels or deletes all content.
 /// Returns Some((title, content, tags)) if the note is successfully edited.
 pub fn open_editor_for_edit(note: &Note) -> Result<Option<(String, String, Vec<String>)>> {
-    // Format tags as hashtags on line 2 (if any exist)
-    let tags_line = if note.tags.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n{}",
-            note.tags
-                .iter()
-                .map(|t| format!("#{}", t))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )
-    };
+    let temp_path = get_temp_path();
 
-    // Build the file content: title, tags (optional), blank line, content
-    let file_content = format!(
-        "{}{}{}{}",
-        note.title,
-        tags_line,
-        if note.content.is_empty() { "" } else { "\n\n" },
-        note.content
-    );
+    // Use BufWriter for better I/O performance
+    let file = fs::File::create(&temp_path)?;
+    let mut writer = io::BufWriter::new(file);
 
-    let temp_path = env::temp_dir().join(format!("qnote-{}.md", std::process::id()));
-    fs::write(&temp_path, file_content)?;
+    // Write title
+    write!(writer, "{}", note.title)?;
+
+    // Write tags if present (optimized: avoid intermediate Vec allocation)
+    if !note.tags.is_empty() {
+        writer.write_all(b"\n")?;
+        for (i, tag) in note.tags.iter().enumerate() {
+            if i > 0 {
+                writer.write_all(b" ")?;
+            }
+            write!(writer, "#{}", tag)?;
+        }
+    }
+
+    // Write content if present
+    if !note.content.is_empty() {
+        writer.write_all(b"\n\n")?;
+        write!(writer, "{}", note.content)?;
+    }
+
+    writer.flush()?;
+    drop(writer);
 
     open_editor(&temp_path)?;
 
     // Read back and parse the edited content
     let content = fs::read_to_string(&temp_path)?;
-    fs::remove_file(&temp_path).ok();
 
     parse_note_file(&content)
 }

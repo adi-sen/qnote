@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 /// Represents a single note with metadata.
@@ -48,8 +48,18 @@ pub struct Database {
 impl Database {
     /// Opens or creates a SQLite database at the given path.
     /// Initializes the schema if the notes table doesn't exist.
+    /// Enables WAL mode for better performance and concurrency.
     pub fn new(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
+
+        // Enable WAL mode for better performance (allows concurrent reads during writes)
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+
+        // Optimize for performance
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        conn.pragma_update(None, "cache_size", -64000)?; // 64MB cache
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
+
         let db = Database { conn };
         db.init_schema()?;
         Ok(db)
@@ -69,6 +79,21 @@ impl Database {
             )",
             [],
         )?;
+
+        // Add indices for frequently queried columns to speed up sorting
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC)",
+            [],
+        )?;
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title COLLATE NOCASE)",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -147,7 +172,7 @@ impl Database {
                         .with_timezone(&Utc),
                 })
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<Note>, rusqlite::Error>>()?;
 
         Ok(notes)
     }
@@ -210,7 +235,7 @@ impl Database {
                         .with_timezone(&Utc),
                 })
             })?
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<Note>, rusqlite::Error>>()?;
 
         Ok(notes)
     }

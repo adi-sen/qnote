@@ -1,7 +1,7 @@
 use crate::db::{Database, Note};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyModifiers};
-use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use ratatui::widgets::ListState;
 
 use super::editor::{open_editor_for_edit, open_editor_for_new_note};
@@ -72,6 +72,8 @@ pub struct App {
     pub preview_scroll: u16,
     pub sort_mode: SortMode,
     pub match_indices: Vec<Vec<usize>>,
+    /// Cached fuzzy matcher to avoid recreating on every keystroke
+    fuzzy_matcher: SkimMatcherV2,
 }
 impl App {
     pub fn new(db: Database) -> Result<Self> {
@@ -94,6 +96,7 @@ impl App {
             preview_scroll: 0,
             sort_mode: SortMode::UpdatedDesc,
             match_indices: Vec::new(),
+            fuzzy_matcher: SkimMatcherV2::default(),
         })
     }
 
@@ -125,34 +128,40 @@ impl App {
 
         // Apply fuzzy search if query exists
         if !self.search_query.is_empty() {
-            let matcher = SkimMatcherV2::default();
-            let mut scored_notes: Vec<(Note, i64, Vec<usize>)> = notes
-                .into_iter()
-                .filter_map(|note| {
-                    // Search in title, content, and tags
-                    let search_text =
-                        format!("{} {} {}", note.title, note.content, note.tags.join(" "));
+            // Pre-allocate with capacity hint to reduce reallocations
+            let mut scored_notes: Vec<(Note, i64, Vec<usize>)> = Vec::with_capacity(notes.len());
 
-                    matcher
-                        .fuzzy_indices(&search_text, &self.search_query)
-                        .map(|(score, indices)| (note, score, indices))
-                })
-                .collect();
+            for note in notes {
+                // Build search text once, reusing tag string when possible
+                let search_text = if note.tags.is_empty() {
+                    format!("{} {}", note.title, note.content)
+                } else {
+                    format!("{} {} {}", note.title, note.content, note.tags.join(" "))
+                };
+
+                // Use cached fuzzy matcher instead of creating new one
+                if let Some((score, indices)) = self
+                    .fuzzy_matcher
+                    .fuzzy_indices(&search_text, &self.search_query)
+                {
+                    scored_notes.push((note, score, indices));
+                }
+            }
 
             // Sort by fuzzy match score (higher is better)
-            scored_notes.sort_by(|a, b| b.1.cmp(&a.1));
+            scored_notes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
 
-            self.notes = scored_notes
-                .iter()
-                .map(|(note, _, _)| note.clone())
-                .collect();
-            self.match_indices = scored_notes
-                .iter()
-                .map(|(_, _, indices)| indices.clone())
-                .collect();
+            // Unpack into separate vectors (more idiomatic than explicit loop)
+            let (notes_vec, indices_vec): (Vec<Note>, Vec<Vec<usize>>) = scored_notes
+                .into_iter()
+                .map(|(note, _score, indices)| (note, indices))
+                .unzip();
+
+            self.notes = notes_vec;
+            self.match_indices = indices_vec;
         } else {
             self.notes = notes;
-            self.match_indices = Vec::new();
+            self.match_indices.clear();
 
             // Apply sort mode
             self.sort_notes();
@@ -169,27 +178,32 @@ impl App {
 
     /// Sorts the notes list in-place according to the current sort mode.
     /// Only called when no search query is active (search results are sorted by relevance).
+    /// Uses unstable_sort for better performance since order of equal elements doesn't matter.
     fn sort_notes(&mut self) {
         match self.sort_mode {
             SortMode::UpdatedDesc => {
-                self.notes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+                self.notes
+                    .sort_unstable_by(|a, b| b.updated_at.cmp(&a.updated_at));
             }
             SortMode::UpdatedAsc => {
-                self.notes.sort_by(|a, b| a.updated_at.cmp(&b.updated_at));
+                self.notes
+                    .sort_unstable_by(|a, b| a.updated_at.cmp(&b.updated_at));
             }
             SortMode::TitleAsc => {
                 self.notes
-                    .sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+                    .sort_unstable_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
             }
             SortMode::TitleDesc => {
                 self.notes
-                    .sort_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
+                    .sort_unstable_by(|a, b| b.title.to_lowercase().cmp(&a.title.to_lowercase()));
             }
             SortMode::CreatedDesc => {
-                self.notes.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+                self.notes
+                    .sort_unstable_by(|a, b| b.created_at.cmp(&a.created_at));
             }
             SortMode::CreatedAsc => {
-                self.notes.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+                self.notes
+                    .sort_unstable_by(|a, b| a.created_at.cmp(&b.created_at));
             }
         }
     }
@@ -289,7 +303,7 @@ impl App {
                             note.tags
                                 .iter()
                                 .map(|t| format!("#{}", t))
-                                .collect::<Vec<_>>()
+                                .collect::<Vec<String>>()
                                 .join(" ")
                         ));
                     }
