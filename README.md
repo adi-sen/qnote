@@ -16,7 +16,7 @@ A fast, lightweight terminal-based note-taking application written in Rust.
 
 ## Installation
 
-### Binary Download (Recommended)
+### Binary Download
 
 Download pre-built binaries from the [Releases](https://github.com/adi-sen/qnote/releases) page.
 
