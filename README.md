@@ -16,23 +16,21 @@ A fast, lightweight terminal-based note-taking application written in Rust.
 
 ## Installation
 
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/adi-sen/qnote.git
-cd qnote
-
-# Build (portable version recommended for distribution)
-cargo build --release --features bundled
-
-# Install to your system
-cargo install --path . --features bundled
-```
-
-### Binary Download
+### Binary Download (Recommended)
 
 Download pre-built binaries from the [Releases](https://github.com/adi-sen/qnote/releases) page.
+
+**Linux/macOS:**
+```bash
+# Download the appropriate binary for your platform
+chmod +x qnote-*
+sudo mv qnote-* /usr/local/bin/qnote
+```
+
+**Windows:**
+- Download `qnote-windows-x86_64.exe`
+- Rename to `qnote.exe`
+- Add to PATH or run directly
 
 ### From Crates.io
 
@@ -40,10 +38,15 @@ Download pre-built binaries from the [Releases](https://github.com/adi-sen/qnote
 cargo install qnote
 ```
 
-### From Homebrew (macOS/Linux)
+### From Source
 
 ```bash
-brew install adi-sen/tap/qnote
+# Clone the repository
+git clone https://github.com/adi-sen/qnote.git
+cd qnote
+
+# Build and install (portable version recommended)
+cargo install --path . --features bundled
 ```
 
 ## Quick Start
@@ -163,16 +166,15 @@ export EDITOR=nano  # or nvim, vim, code, etc.
 
 ## Building from Source
 
-See [BUILD.md](BUILD.md) for detailed build instructions.
-
-### Quick Build
 ```bash
+# Portable version (bundled SQLite, recommended for distribution)
+cargo build --release --features bundled
+
 # Small version (requires system SQLite)
 cargo build --release
-
-# Portable version (bundled SQLite, recommended)
-cargo build --release --features bundled
 ```
+
+The bundled version (~2.6MB) is self-contained and works everywhere. The small version (~1MB) requires SQLite to be installed on the system.
 
 ## Development
 
@@ -193,7 +195,6 @@ qnote/
 │       ├── editor.rs # External editor integration
 │       └── markdown.rs # Markdown rendering
 ├── Cargo.toml
-├── BUILD.md
 └── README.md
 ```
 
