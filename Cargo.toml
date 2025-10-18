@@ -1,0 +1,34 @@
+[package]
+name = "qnote"
+version = "1.0.0"
+edition = "2024"
+authors = ["adi-sen"]
+description = "A fast, lightweight terminal-based note-taking application"
+repository = "https://github.com/adi-sen/qnote"
+license = "MIT"
+keywords = ["notes", "tui", "terminal", "markdown", "cli"]
+categories = ["command-line-utilities", "text-editors"]
+readme = "README.md"
+
+[features]
+default = []
+bundled = ["rusqlite/bundled"]
+
+[profile.release]
+strip = true           # Automatically strip symbols from the binary
+lto = true           # Full link-time optimization (removes unused code)
+panic = "abort"        # Abort on panic instead of unwinding (smaller binary)
+opt-level = 3          # Maximum optimization for speed
+codegen-units = 4      # Single codegen unit for better optimization (smaller + faster)
+
+[dependencies]
+rusqlite = { version = "0.32" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4.5", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = "0.28"
+anyhow = "1.0"
+dirs = "5.0"
+fuzzy-matcher = "0.3"
