@@ -12,29 +12,29 @@ jobs:
     build:
         name: Build ${{ matrix.target }}
         runs-on: ${{ matrix.os }}
+        timeout-minutes: 30
         strategy:
             matrix:
                 include:
+                    # Linux x86_64 (most common)
                     - os: ubuntu-latest
                       target: x86_64-unknown-linux-gnu
                       artifact_name: qnote
                       asset_name: qnote-linux-x86_64
 
-                    - os: ubuntu-latest
-                      target: aarch64-unknown-linux-gnu
-                      artifact_name: qnote
-                      asset_name: qnote-linux-aarch64
-
+                    # macOS Intel
                     - os: macos-latest
                       target: x86_64-apple-darwin
                       artifact_name: qnote
                       asset_name: qnote-macos-x86_64
 
+                    # macOS Apple Silicon
                     - os: macos-latest
                       target: aarch64-apple-darwin
                       artifact_name: qnote
                       asset_name: qnote-macos-aarch64
 
+                    # Windows x86_64
                     - os: windows-latest
                       target: x86_64-pc-windows-msvc
                       artifact_name: qnote.exe
@@ -49,16 +49,12 @@ jobs:
               with:
                   targets: ${{ matrix.target }}
 
-            - name: Install cross-compilation tools (Linux ARM64)
-              if: matrix.target == 'aarch64-unknown-linux-gnu'
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y gcc-aarch64-linux-gnu
+            - name: Setup MSVC (Windows)
+              if: matrix.os == 'windows-latest'
+              uses: ilammy/msvc-dev-cmd@v1
 
             - name: Build
               run: cargo build --release --target ${{ matrix.target }} --features bundled
-              env:
-                  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
             - name: Strip binary (Linux/macOS)
               if: matrix.os != 'windows-latest'
@@ -107,10 +103,9 @@ jobs:
 
                       Download the appropriate binary for your platform:
                       - **Linux x86_64**: `qnote-linux-x86_64`
-                      - **Linux ARM64**: `qnote-linux-aarch64`
                       - **macOS Intel**: `qnote-macos-x86_64`
                       - **macOS Apple Silicon**: `qnote-macos-aarch64`
-                      - **Windows**: `qnote-windows-x86_64.exe`
+                      - **Windows x86_64**: `qnote-windows-x86_64.exe`
 
                       **Linux/macOS:**
                       ```bash
