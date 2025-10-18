@@ -78,28 +78,41 @@ qnote add <title> <content> [--tags tag1,tag2]
 
 # List all notes
 qnote list
+qnote list --oneline              # Compact format for piping to fzf
+qnote list --sort title           # Sort by title (updated, created, title)
+qnote list --limit 10             # Show only 10 most recent
 
 # List notes with specific tag
 qnote list --tag work
 
-# Show a specific note
-qnote show <id>
+# Show a note (by ID or title pattern)
+qnote show 42                     # By ID
+qnote show "shopping"             # By title pattern
 
-# Edit a note
-qnote edit <id> --title "New Title"
-qnote edit <id> --content "New content"
-qnote edit <id> --tags tag1,tag2
+# Edit a note (by ID or title pattern)
+qnote edit 42 --title "New Title"
+qnote edit "shopping" --content "New content"
 
-# Delete a note
-qnote delete <id>
+# Delete a note (with confirmation)
+qnote delete 42
+qnote delete "meeting" --yes      # Skip confirmation
 
 # Search notes
 qnote search <query>
 
+# Export/Import
+qnote export "shopping" -o shopping.md
+qnote import notes/*.md
+
+# Tag management
+qnote tags                        # List all tags with counts
+
+# Statistics
+qnote stats                       # Show note statistics
+
 # Launch TUI
 qnote tui
 ```
-
 ### Interactive TUI
 
 #### Navigation
