@@ -15,11 +15,11 @@ default = []
 bundled = ["rusqlite/bundled"]
 
 [profile.release]
-strip = true           # Automatically strip symbols from the binary
-lto = true           # Full link-time optimization (removes unused code)
-panic = "abort"        # Abort on panic instead of unwinding (smaller binary)
-opt-level = 3          # Maximum optimization for speed
-codegen-units = 4      # Single codegen unit for better optimization (smaller + faster)
+strip = true
+lto = true
+panic = "abort"
+opt-level = 3
+codegen-units = 4
 
 [dependencies]
 rusqlite = { version = "0.32" }
