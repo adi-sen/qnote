@@ -3,11 +3,12 @@ mod db;
 mod tui;
 mod utils;
 
+use std::path::PathBuf;
+
 use anyhow::Result;
 use clap::Parser;
 use cli::{Cli, Commands};
 use db::Database;
-use std::path::PathBuf;
 
 /// Determines the database file path based on the platform.
 ///
@@ -17,37 +18,36 @@ use std::path::PathBuf;
 /// - Windows: C:\Users\<User>\AppData\Roaming\qnote\notes.db
 ///
 /// Creates the qnote directory if it doesn't exist.
-/// Falls back to current directory if the system data directory cannot be determined.
+/// Falls back to current directory if the system data directory cannot be
+/// determined.
 fn get_db_path() -> PathBuf {
-    let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
-    path.push("qnote");
-    std::fs::create_dir_all(&path).ok();
-    path.push("notes.db");
-    path
+	let mut path = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from("."));
+	path.push("qnote");
+	std::fs::create_dir_all(&path).ok();
+	path.push("notes.db");
+	path
 }
 
 fn main() -> Result<()> {
-    // Initialize database connection
-    let db_path = get_db_path();
-    let db_path_str = db_path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid database path"))?;
-    let db = Database::new(db_path_str)?;
+	// Initialize database connection
+	let db_path = get_db_path();
+	let db_path_str = db_path.to_str().ok_or_else(|| anyhow::anyhow!("Invalid database path"))?;
+	let db = Database::new(db_path_str)?;
 
-    // Parse command-line arguments
-    let cli = Cli::parse();
+	// Parse command-line arguments
+	let cli = Cli::parse();
 
-    // Route to TUI or CLI command handler
-    match cli.command {
-        // No command or explicit 'tui' command: launch interactive TUI
-        Some(Commands::Tui) | None => {
-            tui::run_tui(db)?;
-        }
-        // Execute CLI command (add, list, edit, etc.)
-        Some(cmd) => {
-            cli::handle_command(&db, cmd)?;
-        }
-    }
+	// Route to TUI or CLI command handler
+	match cli.command {
+		// No command or explicit 'tui' command: launch interactive TUI
+		Some(Commands::Tui) | None => {
+			tui::run_tui(db)?;
+		}
+		// Execute CLI command (add, list, edit, etc.)
+		Some(cmd) => {
+			cli::handle_command(&db, cmd)?;
+		}
+	}
 
-    Ok(())
+	Ok(())
 }
