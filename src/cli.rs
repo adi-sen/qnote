@@ -264,7 +264,7 @@ fn cmd_edit(
 		let new_content = content.unwrap_or(note.content);
 		let new_tags = tags.map(|t| parse_tags(Some(t))).unwrap_or(note.tags);
 
-		db.update_note(id, new_title, new_content, &new_tags)?;
+		db.update_note(id, &new_title, &new_content, &new_tags)?;
 		println!("Note {id} updated.");
 	}
 	Ok(())
@@ -319,18 +319,20 @@ fn cmd_stats(db: &Database) -> Result<()> {
 		},
 	);
 
-	#[allow(clippy::cast_precision_loss, reason = "KB display doesn't require exact precision")]
-	let size_kb = total_size as f64 / 1024.0;
+	let size_kb = total_size / 1024;
+	let size_bytes_remainder = total_size % 1024;
 	let sep = "=".repeat(50);
 	println!(
 		"\n{sep}\nqnote Statistics\n{sep}\n\
         Total notes:      {}\n\
         Unique tags:      {}\n\
-        Total size:       {size_kb:.2} KB\n\
+        Total size:       {}.{:02} KB\n\
         Oldest note:      {} ({})\n\
         Most recent:      {} ({})\n{sep}",
 		notes.len(),
 		tag_set.len(),
+		size_kb,
+		(size_bytes_remainder * 100) / 1024,
 		oldest.title,
 		format_date_only(&oldest.created_at),
 		newest.title,
@@ -341,10 +343,10 @@ fn cmd_stats(db: &Database) -> Result<()> {
 
 /// Prompts user for confirmation. Returns true if user confirms.
 fn confirm(prompt: &str) -> bool {
-	use std::io::{self, Write};
+	use std::io::{Write, stdin};
 	print!("{prompt} (y/N): ");
-	let _ = io::stdout().flush();
+	std::io::stdout().flush().ok();
 	let mut input = String::new();
-	let _ = io::stdin().read_line(&mut input);
-	matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+	stdin().read_line(&mut input).ok();
+	matches!(input.trim(), "y" | "Y" | "yes" | "Yes")
 }

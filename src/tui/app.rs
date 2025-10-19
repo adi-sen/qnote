@@ -138,27 +138,25 @@ impl App {
 			// Apply sort mode
 			self.sort_notes();
 		} else {
-			// Pre-allocate with capacity hint to reduce reallocations
 			let mut scored_notes: Vec<(Note, i64, Vec<usize>)> = Vec::with_capacity(notes.len());
 
 			for note in notes {
-				// Build search text once, reusing tag string when possible
-				let search_text = if note.tags.is_empty() {
-					format!("{} {}", note.title, note.content)
-				} else {
-					format!("{} {} {}", note.title, note.content, note.tags.join(" "))
-				};
+				let tags_str = note.tags.join(" ");
+				let mut search_text = String::with_capacity(note.title.len() + note.content.len() + tags_str.len() + 2);
+				search_text.push_str(&note.title);
+				search_text.push(' ');
+				search_text.push_str(&note.content);
+				if !tags_str.is_empty() {
+					search_text.push(' ');
+					search_text.push_str(&tags_str);
+				}
 
-				// Use cached fuzzy matcher instead of creating new one
 				if let Some((score, indices)) = self.fuzzy_matcher.fuzzy_indices(&search_text, &self.search_query) {
 					scored_notes.push((note, score, indices));
 				}
 			}
 
-			// Sort by fuzzy match score (higher is better)
 			scored_notes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
-
-			// Unpack into separate vectors (more idiomatic than explicit loop)
 			let (notes_vec, indices_vec): (Vec<Note>, Vec<Vec<usize>>) =
 				scored_notes.into_iter().map(|(note, _score, indices)| (note, indices)).unzip();
 
@@ -189,16 +187,10 @@ impl App {
 	/// Navigate through notes list (with wrapping)
 	fn navigate(&mut self, down: bool) {
 		if !self.notes.is_empty() {
-			let i = self.list_state.selected().map_or(0, |i| {
-				if down {
-					if i >= self.notes.len() - 1 { 0 } else { i + 1 }
-				} else if i == 0 {
-					self.notes.len() - 1
-				} else {
-					i - 1
-				}
-			});
-			self.list_state.select(Some(i));
+			let current = self.list_state.selected().unwrap_or(0);
+			let delta = if down { 1 } else { -1 };
+			let new_index = ((current as isize + delta).rem_euclid(self.notes.len() as isize)) as usize;
+			self.list_state.select(Some(new_index));
 			self.preview_scroll = 0;
 		}
 	}
@@ -305,7 +297,7 @@ impl App {
 				{
 					match open_editor_for_edit(&note) {
 						Ok(Some((title, content, tags))) => {
-							self.db.update_note(id, title, content, &tags)?;
+							self.db.update_note(id, &title, &content, &tags)?;
 							self.set_message("Note saved");
 							self.refresh_notes()?;
 						}

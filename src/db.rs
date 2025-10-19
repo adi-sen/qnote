@@ -110,6 +110,42 @@ impl Database {
              CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title COLLATE NOCASE);",
 		)?;
 
+		// Create FTS5 virtual table for fast full-text search
+		// FTS5 provides much better performance than LIKE queries on large datasets
+		self.conn.execute(
+			"CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+                title, content, tags, content='notes', content_rowid='id'
+            )",
+			[],
+		)?;
+
+		// Create triggers to keep FTS table in sync with notes table
+		self.conn.execute_batch(
+			"CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+                INSERT INTO notes_fts(rowid, title, content, tags)
+                VALUES (new.id, new.title, new.content, new.tags);
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+                DELETE FROM notes_fts WHERE rowid = old.id;
+             END;
+
+             CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+                UPDATE notes_fts SET title=new.title, content=new.content, tags=new.tags
+                WHERE rowid=new.id;
+             END;",
+		)?;
+
+		// Rebuild FTS index if notes exist but FTS is empty (migration case)
+		let notes_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
+		let fts_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0)).unwrap_or(0);
+
+		if notes_count > 0 && fts_count == 0 {
+			self
+				.conn
+				.execute("INSERT INTO notes_fts(rowid, title, content, tags) SELECT id, title, content, tags FROM notes", [])?;
+		}
+
 		Ok(())
 	}
 
@@ -155,21 +191,13 @@ impl Database {
 	/// Updates an existing note's title, content, and tags.
 	/// Automatically updates the `updated_at` timestamp to the current time.
 	/// Tags are serialized to JSON before storage.
-	pub fn update_note(
-		&self,
-		id: i64,
-		title: impl Into<String>,
-		content: impl Into<String>,
-		tags: &[String],
-	) -> Result<()> {
-		let title = title.into();
-		let content = content.into();
+	pub fn update_note(&self, id: i64, title: &str, content: &str, tags: &[String]) -> Result<()> {
 		let tags_json = serde_json::to_string(tags)?;
 		let updated_at = Utc::now();
 
 		self.conn.execute(
 			"UPDATE notes SET title = ?1, content = ?2, tags = ?3, updated_at = ?4 WHERE id = ?5",
-			params![&title, &content, &tags_json, &updated_at.to_rfc3339(), id],
+			params![title, content, &tags_json, &updated_at.to_rfc3339(), id],
 		)?;
 		Ok(())
 	}
@@ -181,10 +209,31 @@ impl Database {
 		Ok(())
 	}
 
-	/// Searches for notes matching the query string using SQL LIKE.
-	/// Searches across title, content, and tags fields (case-insensitive).
-	/// Returns results ordered by `updated_at` descending.
+	/// Searches for notes matching the query string using SQLite FTS5.
+	/// Searches across title, content, and tags fields with full-text search.
+	/// Returns results ordered by relevance (BM25 rank) then by `updated_at`
+	/// descending. Falls back to LIKE search if FTS5 query fails (e.g., invalid
+	/// search syntax).
 	pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
+		// Try FTS5 search first for better performance
+		let fts_result = self.conn.prepare(
+			"SELECT n.id, n.title, n.content, n.tags, n.created_at, n.updated_at
+             FROM notes n
+             INNER JOIN notes_fts fts ON n.id = fts.rowid
+             WHERE notes_fts MATCH ?1
+             ORDER BY rank, n.updated_at DESC",
+		);
+
+		if let Ok(mut stmt) = fts_result
+			&& let Ok(notes) = stmt
+				.query_map(params![query], Self::row_to_note)
+				.and_then(|rows| rows.collect::<Result<Vec<Note>, rusqlite::Error>>())
+		{
+			return Ok(notes);
+		}
+
+		// Fallback to LIKE search if FTS5 fails (e.g., special characters, invalid
+		// syntax)
 		let search_pattern = format!("%{query}%");
 		let mut stmt = self.conn.prepare(
 			"SELECT id, title, content, tags, created_at, updated_at
