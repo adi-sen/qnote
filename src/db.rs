@@ -1,12 +1,4 @@
-//! Database layer for qnote using `SQLite`.
-//!
-//! Handles all CRUD operations for notes with the following schema:
-//! - id: Auto-incrementing primary key
-//! - title: Note heading
-//! - content: Note body text
-//! - tags: JSON array of tag strings
-//! - `created_at`: RFC3339 timestamp of creation
-//! - `updated_at`: RFC3339 timestamp of last modification
+//! SQLite database layer for note CRUD operations with full-text search.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -19,7 +11,7 @@ const DB_JOURNAL_MODE: &str = "WAL";
 const DB_SYNCHRONOUS: &str = "NORMAL";
 const DB_TEMP_STORE: &str = "MEMORY";
 
-/// Represents a single note with metadata.
+/// A note with title, content, tags, and timestamps.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Note {
 	pub id:         Option<i64>,
@@ -31,29 +23,24 @@ pub struct Note {
 }
 
 impl Note {
-	/// Creates a new note with the current timestamp for both `created_at` and
-	/// `updated_at`. The id field is None until the note is saved to the
-	/// database.
+	/// Creates a new note with current timestamp (id is None until saved).
 	pub fn new(title: String, content: String, tags: Vec<String>) -> Self {
 		let now = Utc::now();
 		Self { id: None, title, content, tags, created_at: now, updated_at: now }
 	}
 }
 
-/// `SQLite` database wrapper for note storage and retrieval.
+/// SQLite database wrapper for note storage and retrieval.
 pub struct Database {
 	conn: Connection,
 }
 
 impl Database {
-	/// Opens or creates a `SQLite` database at the given path.
-	/// Initializes the schema if the notes table doesn't exist.
-	/// Enables WAL mode for better performance and concurrency.
+	/// Opens or creates a database with WAL mode and FTS5 support.
 	pub fn new(path: &str) -> Result<Self> {
 		let conn = Connection::open(path)?;
 
-		// Enable WAL mode for better performance (allows concurrent reads during
-		// writes)
+		// Enable WAL mode for concurrent reads
 		conn.pragma_update(None, "journal_mode", DB_JOURNAL_MODE)?;
 		conn.pragma_update(None, "synchronous", DB_SYNCHRONOUS)?;
 		conn.pragma_update(None, "cache_size", DB_CACHE_SIZE_KB)?;
@@ -64,16 +51,7 @@ impl Database {
 		Ok(db)
 	}
 
-	/// Helper function to convert a database row into a Note struct.
-	/// Handles JSON deserialization of tags and RFC3339 timestamp parsing.
-	///
-	/// Expected row columns (in order):
-	/// 0. id (i64)
-	/// 1. title (String)
-	/// 2. content (String)
-	/// 3. tags (JSON String)
-	/// 4. `created_at` (RFC3339 String)
-	/// 5. `updated_at` (RFC3339 String)
+	/// Converts a database row to a Note.
 	fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
 		let tags_json: String = row.get(3)?;
 		let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
@@ -88,8 +66,7 @@ impl Database {
 		Ok(Note { id: Some(row.get(0)?), title: row.get(1)?, content: row.get(2)?, tags, created_at, updated_at })
 	}
 
-	/// Creates the notes table if it doesn't exist.
-	/// Safe to call multiple times - uses CREATE TABLE IF NOT EXISTS.
+	/// Initializes database schema with FTS5 triggers (idempotent).
 	fn init_schema(&self) -> Result<()> {
 		self.conn.execute(
 			"CREATE TABLE IF NOT EXISTS notes (
@@ -103,15 +80,14 @@ impl Database {
 			[],
 		)?;
 
-		// Add indices for frequently queried columns to speed up sorting
+		// Indices for sorting
 		self.conn.execute_batch(
 			"CREATE INDEX IF NOT EXISTS idx_notes_updated_at ON notes(updated_at DESC);
              CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC);
              CREATE INDEX IF NOT EXISTS idx_notes_title ON notes(title COLLATE NOCASE);",
 		)?;
 
-		// Create FTS5 virtual table for fast full-text search
-		// FTS5 provides much better performance than LIKE queries on large datasets
+		// FTS5 virtual table for full-text search
 		self.conn.execute(
 			"CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
                 title, content, tags, content='notes', content_rowid='id'
@@ -119,7 +95,7 @@ impl Database {
 			[],
 		)?;
 
-		// Create triggers to keep FTS table in sync with notes table
+		// Triggers to sync FTS table
 		self.conn.execute_batch(
 			"CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
                 INSERT INTO notes_fts(rowid, title, content, tags)
@@ -136,9 +112,13 @@ impl Database {
              END;",
 		)?;
 
-		// Rebuild FTS index if notes exist but FTS is empty (migration case)
+		// Rebuild FTS index if empty (migration case)
 		let notes_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
-		let fts_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0)).unwrap_or(0);
+		let fts_count: i64 = match self.conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0)) {
+			Ok(count) => count,
+			Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+			Err(e) => return Err(e.into()),
+		};
 
 		if notes_count > 0 && fts_count == 0 {
 			self
@@ -149,8 +129,7 @@ impl Database {
 		Ok(())
 	}
 
-	/// Inserts a new note into the database and returns its assigned ID.
-	/// Tags are serialized to JSON before storage.
+	/// Inserts a note and returns its assigned ID.
 	pub fn create_note(&self, note: &Note) -> Result<i64> {
 		let tags_json = serde_json::to_string(&note.tags)?;
 		self.conn.execute(
@@ -161,8 +140,7 @@ impl Database {
 		Ok(self.conn.last_insert_rowid())
 	}
 
-	/// Retrieves a single note by its ID.
-	/// Returns None if the note doesn't exist, otherwise Some(Note).
+	/// Retrieves a note by ID.
 	pub fn get_note(&self, id: i64) -> Result<Option<Note>> {
 		let mut stmt =
 			self.conn.prepare("SELECT id, title, content, tags, created_at, updated_at FROM notes WHERE id = ?1")?;
@@ -176,8 +154,7 @@ impl Database {
 		}
 	}
 
-	/// Returns all notes ordered by `updated_at` descending (most recently
-	/// updated first). Tags are deserialized from JSON storage format.
+	/// Returns all notes ordered by most recently updated.
 	pub fn list_notes(&self) -> Result<Vec<Note>> {
 		let mut stmt = self
 			.conn
@@ -188,9 +165,7 @@ impl Database {
 		Ok(notes)
 	}
 
-	/// Updates an existing note's title, content, and tags.
-	/// Automatically updates the `updated_at` timestamp to the current time.
-	/// Tags are serialized to JSON before storage.
+	/// Updates a note's title, content, and tags.
 	pub fn update_note(&self, id: i64, title: &str, content: &str, tags: &[String]) -> Result<()> {
 		let tags_json = serde_json::to_string(tags)?;
 		let updated_at = Utc::now();
@@ -202,38 +177,19 @@ impl Database {
 		Ok(())
 	}
 
-	/// Permanently deletes a note from the database by its ID.
-	/// No error is raised if the note doesn't exist.
+	/// Deletes a note by ID.
 	pub fn delete_note(&self, id: i64) -> Result<()> {
 		self.conn.execute("DELETE FROM notes WHERE id = ?1", params![id])?;
 		Ok(())
 	}
 
-	/// Searches for notes matching the query string using SQLite FTS5.
-	/// Searches across title, content, and tags fields with full-text search.
-	/// Returns results ordered by relevance (BM25 rank) then by `updated_at`
-	/// descending. Falls back to LIKE search if FTS5 query fails (e.g., invalid
-	/// search syntax).
+	/// Searches notes using LIKE pattern matching (case-insensitive substring
+	/// search).
 	pub fn search_notes(&self, query: &str) -> Result<Vec<Note>> {
-		// Try FTS5 search first for better performance
-		let fts_result = self.conn.prepare(
-			"SELECT n.id, n.title, n.content, n.tags, n.created_at, n.updated_at
-             FROM notes n
-             INNER JOIN notes_fts fts ON n.id = fts.rowid
-             WHERE notes_fts MATCH ?1
-             ORDER BY rank, n.updated_at DESC",
-		);
-
-		if let Ok(mut stmt) = fts_result
-			&& let Ok(notes) = stmt
-				.query_map(params![query], Self::row_to_note)
-				.and_then(|rows| rows.collect::<Result<Vec<Note>, rusqlite::Error>>())
-		{
-			return Ok(notes);
+		if query.is_empty() {
+			return self.list_notes();
 		}
 
-		// Fallback to LIKE search if FTS5 fails (e.g., special characters, invalid
-		// syntax)
 		let search_pattern = format!("%{query}%");
 		let mut stmt = self.conn.prepare(
 			"SELECT id, title, content, tags, created_at, updated_at

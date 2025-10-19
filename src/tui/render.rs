@@ -14,12 +14,12 @@ const CYAN: Style = Style::new().fg(Color::Cyan);
 const DARK_GRAY: Style = Style::new().fg(Color::DarkGray);
 const GRAY: Style = Style::new().fg(Color::Gray);
 
-const HELP_LIST_MODE: &str = "j/k navigate  ^j/k scroll  g/G top/bottom  ⏎ edit  n new  e edit  d delete  s sort  x export  / search  ESC clear  q quit";
+const HELP_LIST_MODE: &str =
+	"j/k navigate  ^j/k scroll  g/G top/bottom  ⏎ edit  n new  d delete  s sort  x export  / search  ESC clear  q quit";
 const HELP_SEARCH_MODE: &str = "^n/p navigate  ⏎ accept  ESC cancel";
 
 pub fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
 	loop {
-		// Only clear if returning from editor
 		if app.needs_clear {
 			terminal.clear()?;
 			app.needs_clear = false;
@@ -29,7 +29,7 @@ pub fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &m
 		if let Event::Key(key) = event::read()?
 			&& key.kind == KeyEventKind::Press
 		{
-			app.tick_message(); // Auto-clear messages after keypresses
+			app.tick_message();
 
 			let should_quit = match app.screen {
 				Screen::List => app.handle_list_input(key.code, key.modifiers)?,
@@ -44,7 +44,6 @@ pub fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &m
 }
 
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
-	// Layout: main content, optional status bar, footer
 	let has_message = app.message.is_some();
 	let footer_height = calculate_footer_height(app, f.area().width);
 
@@ -59,8 +58,6 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 	};
 
 	let chunks = Layout::default().direction(Direction::Vertical).constraints(constraints).split(f.area());
-
-	// Always render split view - search is inline now
 	render_split_view(f, app, chunks[0]);
 
 	if has_message {
@@ -76,8 +73,6 @@ const fn calculate_footer_height(app: &App, width: u16) -> u16 {
 		Screen::List => HELP_LIST_MODE,
 		Screen::SearchMode => HELP_SEARCH_MODE,
 	};
-
-	// Calculate if text needs wrapping
 	if help_text.len() > width as usize { 2 } else { 1 }
 }
 
@@ -88,52 +83,39 @@ fn render_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
 	}
 }
 
-/// Creates styled spans with fuzzy match highlighting.
-/// Characters at the given indices are highlighted in yellow bold.
-/// Used to show which characters matched the user's search query.
-fn highlight_matches(text: &str, indices: &[usize]) -> Vec<Span<'static>> {
+/// Simple highlighting for matched characters in title.
+fn highlight_title(text: &str, indices: &[usize]) -> Vec<Span<'static>> {
 	if indices.is_empty() {
 		return vec![Span::raw(text.to_string())];
 	}
 
-	// Pre-allocate with capacity estimate (normal text + highlights)
-	let mut spans = Vec::with_capacity(indices.len() * 2 + 1);
 	let chars: Vec<char> = text.chars().collect();
-	let mut last_idx = 0;
-
-	// Sort and deduplicate indices to process them in order
+	let mut spans = Vec::with_capacity(indices.len() * 2 + 1);
 	let mut sorted_indices = indices.to_vec();
 	sorted_indices.sort_unstable();
 	sorted_indices.dedup();
 
 	let highlight_style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+	let mut last_idx = 0;
 
 	for &idx in &sorted_indices {
 		if idx >= chars.len() {
 			break;
 		}
 
-		// Add normal text before match (owned String)
 		if idx > last_idx {
 			let segment: String = chars[last_idx..idx].iter().collect();
 			spans.push(Span::raw(segment));
 		}
 
-		// Add highlighted match character (owned String)
 		let ch: String = chars[idx].to_string();
 		spans.push(Span::styled(ch, highlight_style));
-
 		last_idx = idx + 1;
 	}
 
-	// Add remaining text (owned String)
 	if last_idx < chars.len() {
 		let segment: String = chars[last_idx..].iter().collect();
 		spans.push(Span::raw(segment));
-	}
-
-	if spans.is_empty() {
-		spans.push(Span::raw(text.to_string()));
 	}
 
 	spans
@@ -162,9 +144,9 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 			let date_width = date_str.len();
 
 			// Calculate available width for title
-			let available_width = list_width.saturating_sub(date_width + 1); // +1 for space
+			let available_width = list_width.saturating_sub(date_width + 1);
 
-			// Reduce allocations: only clone if truncation is needed
+			// Truncate title if needed
 			let title_display = if note.title.len() > available_width {
 				let mut truncated = String::with_capacity(available_width);
 				truncated.push_str(&note.title[..available_width.saturating_sub(1)]);
@@ -174,16 +156,25 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 				note.title.clone()
 			};
 
-			// Build line with title, spacing, and date
+			// Apply simple highlighting in title if searching
 			let title_spans = if has_search && idx < app.match_indices.len() {
-				highlight_matches(&title_display, &app.match_indices[idx])
+				let title_len = note.title.chars().count();
+				let title_indices: Vec<usize> =
+					app.match_indices[idx].iter().filter_map(|&i| if i < title_len { Some(i) } else { None }).collect();
+
+				if !title_indices.is_empty() {
+					highlight_title(&title_display, &title_indices)
+				} else {
+					vec![Span::raw(title_display.clone())]
+				}
 			} else {
 				vec![Span::raw(title_display.clone())]
 			};
 
 			let spacing = " ".repeat(available_width.saturating_sub(title_display.len()));
-
-			let spans = [title_spans, vec![Span::raw(spacing), Span::styled(date_str, DARK_GRAY)]].concat();
+			let mut spans = title_spans;
+			spans.push(Span::raw(spacing));
+			spans.push(Span::styled(date_str, DARK_GRAY));
 
 			ListItem::new(vec![Line::from(spans)])
 		})
@@ -197,7 +188,7 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 		"Notes".to_string()
 	} else {
 		let query = &app.search_query;
-		format!("Notes (filtered: {query})")
+		format!("Notes (search: {query})")
 	};
 
 	let title_style = if app.screen == Screen::SearchMode { CYAN } else { Style::default() };
@@ -221,16 +212,15 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
 			format!("{tags} • {updated}")
 		};
 
-		// Build content with title and body using cached styles
-		let content_lines = [
-			vec![
-				Line::from(vec![Span::styled(&note.title, CYAN_BOLD)]),
-				Line::from(vec![Span::styled(metadata, DARK_GRAY)]),
-				Line::from(""),
-			],
-			markdown_to_lines(&note.content),
+		// Build content with title and body
+		let content_lines = vec![
+			Line::from(vec![Span::styled(&note.title, CYAN_BOLD)]),
+			Line::from(vec![Span::styled(metadata, DARK_GRAY)]),
+			Line::from(""),
 		]
-		.concat();
+		.into_iter()
+		.chain(markdown_to_lines(&note.content))
+		.collect::<Vec<_>>();
 
 		// Build title with note position and scroll indicator
 		let note_idx = app.list_state.selected().unwrap_or(0) + 1;
@@ -274,7 +264,7 @@ fn render_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
 		}
 		Screen::SearchMode => {
 			let found = app.notes.len();
-			format!("{found} found | {HELP_SEARCH_MODE}")
+			format!("{found} matches | {HELP_SEARCH_MODE}")
 		}
 	};
 

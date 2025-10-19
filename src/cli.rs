@@ -119,14 +119,11 @@ fn cmd_add(db: &Database, title: String, content: String, tags: Option<String>) 
 fn cmd_list(db: &Database, tag: Option<String>, oneline: bool, sort: SortBy, limit: Option<usize>) -> Result<()> {
 	let notes = db.list_notes()?;
 
-	// Filter by tag
 	let mut filtered: Vec<Note> = if let Some(tag_filter) = tag {
 		notes.into_iter().filter(|n| n.tags.contains(&tag_filter)).collect()
 	} else {
 		notes
 	};
-
-	// Sort
 	match sort {
 		SortBy::Created => filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
 		SortBy::Title => {
@@ -134,8 +131,6 @@ fn cmd_list(db: &Database, tag: Option<String>, oneline: bool, sort: SortBy, lim
 		}
 		SortBy::Updated => filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
 	}
-
-	// Limit
 	if let Some(limit_val) = limit {
 		filtered.truncate(limit_val);
 	}
@@ -213,7 +208,11 @@ fn cmd_import(db: &Database, files: &[String]) -> Result<()> {
 
 fn cmd_tags(db: &Database) -> Result<()> {
 	let notes = db.list_notes()?;
-	let mut tag_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+	// Pre-allocate HashMap capacity
+	let estimated_capacity = notes.iter().map(|n| n.tags.len()).sum();
+	let mut tag_counts: std::collections::HashMap<String, usize> =
+		std::collections::HashMap::with_capacity(estimated_capacity);
 
 	for note in notes {
 		for tag in note.tags {
@@ -273,7 +272,7 @@ fn cmd_edit(
 fn cmd_delete(db: &Database, id_or_title: &str, yes: bool) -> Result<()> {
 	let id = resolve_note(db, id_or_title)?;
 	if let Some(note) = db.get_note(id)? {
-		eprintln!("Found: [{}] {}", id, note.title);
+		println!("Found: [{}] {}", id, note.title);
 		if yes || confirm("Delete this note?") {
 			db.delete_note(id)?;
 			println!("Note {id} deleted.");
@@ -319,20 +318,18 @@ fn cmd_stats(db: &Database) -> Result<()> {
 		},
 	);
 
-	let size_kb = total_size / 1024;
-	let size_bytes_remainder = total_size % 1024;
+	let size_kb = total_size as f64 / 1024.0;
 	let sep = "=".repeat(50);
 	println!(
 		"\n{sep}\nqnote Statistics\n{sep}\n\
         Total notes:      {}\n\
         Unique tags:      {}\n\
-        Total size:       {}.{:02} KB\n\
+        Total size:       {:.2} KB\n\
         Oldest note:      {} ({})\n\
         Most recent:      {} ({})\n{sep}",
 		notes.len(),
 		tag_set.len(),
 		size_kb,
-		(size_bytes_remainder * 100) / 1024,
 		oldest.title,
 		format_date_only(&oldest.created_at),
 		newest.title,

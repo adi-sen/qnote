@@ -12,34 +12,26 @@ const PREVIEW_MAX_SCROLL_BUFFER: u16 = 10;
 const HEADER_LINES: u16 = 3; // title + metadata + blank line
 const MAX_MARKDOWN_FORMATTING_BUFFER: u16 = 10;
 
-/// Application screen state: determines which UI mode is active.
+/// Current UI screen mode.
 #[derive(PartialEq, Eq)]
 pub enum Screen {
-	/// Normal list view where user can navigate and edit notes
 	List,
-	/// Inline search mode with incremental fuzzy filtering
 	SearchMode,
 }
 
-/// Note sorting options that user can cycle through with 's' key.
+/// Note sorting mode (cycle with 's' key).
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SortMode {
-	/// Sort by last updated date, newest first (default)
 	UpdatedDesc,
-	/// Sort by last updated date, oldest first
 	UpdatedAsc,
-	/// Sort by title alphabetically, A→Z
 	TitleAsc,
-	/// Sort by title alphabetically, Z→A
 	TitleDesc,
-	/// Sort by creation date, newest first
 	CreatedDesc,
-	/// Sort by creation date, oldest first
 	CreatedAsc,
 }
 
 impl SortMode {
-	/// Cycles to the next sort mode when user presses 's' key.
+	/// Returns the next sort mode in the cycle.
 	pub const fn next(self) -> Self {
 		match self {
 			Self::UpdatedDesc => Self::UpdatedAsc,
@@ -51,7 +43,7 @@ impl SortMode {
 		}
 	}
 
-	/// Returns the human-readable name for displaying in the UI footer.
+	/// Returns the display name for the UI.
 	pub const fn name(self) -> &'static str {
 		match self {
 			Self::UpdatedDesc => "Updated ↓",
@@ -64,7 +56,7 @@ impl SortMode {
 	}
 }
 
-/// Main application state for the TUI.
+/// TUI application state.
 pub struct App {
 	pub db:              Database,
 	pub screen:          Screen,
@@ -78,7 +70,6 @@ pub struct App {
 	pub preview_scroll:  u16,
 	pub sort_mode:       SortMode,
 	pub match_indices:   Vec<Vec<usize>>,
-	/// Cached fuzzy matcher to avoid recreating on every keystroke
 	fuzzy_matcher:       SkimMatcherV2,
 }
 impl App {
@@ -106,14 +97,13 @@ impl App {
 		})
 	}
 
-	/// Sets a status message that will auto-clear after a few keypresses.
+	/// Sets a status message that auto-clears after a few keypresses.
 	fn set_message(&mut self, msg: impl Into<String>) {
 		self.message = Some(msg.into());
 		self.message_counter = MESSAGE_DISPLAY_KEYPRESSES;
 	}
 
-	/// Decrements the message counter on each keypress and clears the message
-	/// when it reaches zero.
+	/// Decrements message counter and clears when it reaches zero.
 	pub fn tick_message(&mut self) {
 		self.message_counter = self.message_counter.saturating_sub(1);
 		if self.message_counter == 0 {
@@ -121,42 +111,26 @@ impl App {
 		}
 	}
 
-	/// Refreshes the notes list from the database, applying search and sort
-	/// filters.
-	///
-	/// If a search query exists, performs fuzzy matching across title, content,
-	/// and tags, then sorts by relevance score. Otherwise applies the current
-	/// sort mode. Also resets selection and scroll state as needed.
+	/// Refreshes notes from database, applying fuzzy search and sort.
 	fn refresh_notes(&mut self) -> Result<()> {
-		let notes = self.db.list_notes()?;
+		let all_notes = self.db.list_notes()?;
 
-		// Apply fuzzy search if query exists
 		if self.search_query.is_empty() {
-			self.notes = notes;
+			self.notes = all_notes;
 			self.match_indices.clear();
-
-			// Apply sort mode
 			self.sort_notes();
 		} else {
-			let mut scored_notes: Vec<(Note, i64, Vec<usize>)> = Vec::with_capacity(notes.len());
+			let mut scored_notes: Vec<(Note, i64, Vec<usize>)> = Vec::with_capacity(all_notes.len());
 
-			for note in notes {
-				let tags_str = note.tags.join(" ");
-				let mut search_text = String::with_capacity(note.title.len() + note.content.len() + tags_str.len() + 2);
-				search_text.push_str(&note.title);
-				search_text.push(' ');
-				search_text.push_str(&note.content);
-				if !tags_str.is_empty() {
-					search_text.push(' ');
-					search_text.push_str(&tags_str);
-				}
+			for note in all_notes {
+				let search_text = format!("{} {}", note.title, note.content);
 
 				if let Some((score, indices)) = self.fuzzy_matcher.fuzzy_indices(&search_text, &self.search_query) {
 					scored_notes.push((note, score, indices));
 				}
 			}
-
 			scored_notes.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+
 			let (notes_vec, indices_vec): (Vec<Note>, Vec<Vec<usize>>) =
 				scored_notes.into_iter().map(|(note, _score, indices)| (note, indices)).unzip();
 
@@ -165,7 +139,7 @@ impl App {
 		}
 
 		self.list_state.select((!self.notes.is_empty()).then_some(0));
-		self.preview_scroll = 0; // Reset scroll when notes change
+		self.preview_scroll = 0;
 		Ok(())
 	}
 
@@ -202,6 +176,7 @@ impl App {
 			let lines = note.content.lines().count() as u16;
 			#[allow(clippy::cast_possible_truncation)]
 			let headers = (note.content.matches('#').count() as u16).min(MAX_MARKDOWN_FORMATTING_BUFFER);
+
 			HEADER_LINES + lines + headers
 		})
 	}
@@ -217,24 +192,9 @@ impl App {
 		}
 	}
 
-	/// Handles keyboard input when in normal list view mode.
-	/// Returns true if the application should quit, false otherwise.
-	///
-	/// Key bindings:
-	/// - ^j/k: Scroll preview pane
-	/// - j/k: Navigate notes list
-	/// - g/G: Jump to top/bottom
-	/// - n: New note
-	/// - e/Enter: Edit note
-	/// - d: Delete note
-	/// - s: Cycle sort modes
-	/// - x: Export note
-	/// - /: Enter search mode
-	/// - ESC: Clear search filter
-	/// - q: Quit
+	/// Handles keyboard input in list view mode.
 	#[allow(clippy::too_many_lines)]
 	pub fn handle_list_input(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-		// Handle Ctrl+j/k for preview scrolling
 		if modifiers.contains(KeyModifiers::CONTROL) {
 			match key {
 				KeyCode::Char('j') => {
@@ -308,7 +268,7 @@ impl App {
 			}
 			KeyCode::Char('/') => {
 				self.screen = Screen::SearchMode;
-				self.input_buffer = self.search_query.clone(); // Start with current search
+				self.input_buffer = self.search_query.clone();
 			}
 			KeyCode::Char('g') => {
 				if !self.notes.is_empty() {
@@ -329,7 +289,7 @@ impl App {
 					self.search_query.clear();
 					self.input_buffer.clear();
 					self.refresh_notes()?;
-					self.set_message("Filter cleared");
+					self.set_message("Search cleared");
 				}
 			}
 			_ => {}
@@ -337,18 +297,8 @@ impl App {
 		Ok(false)
 	}
 
-	/// Handles keyboard input when in search mode (incremental fuzzy search).
-	/// Returns true if the application should quit, false otherwise.
-	///
-	/// Key bindings:
-	/// - Type: Add to search query (incremental filtering)
-	/// - Backspace: Remove from search query
-	/// - ^n/p or ^j/k: Navigate results while typing
-	/// - Up/Down: Navigate results
-	/// - Enter: Accept search and return to list
-	/// - ESC: Cancel search
+	/// Handles keyboard input in search mode (incremental fuzzy search).
 	pub fn handle_search_input(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
-		// Handle Ctrl+n/p or Ctrl+j/k for navigation while searching
 		if modifiers.contains(KeyModifiers::CONTROL) {
 			let navigate = match key {
 				KeyCode::Char('n' | 'j') | KeyCode::Down => Some(true),
