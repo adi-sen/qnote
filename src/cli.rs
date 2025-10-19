@@ -10,6 +10,10 @@
 //! - tui: Launch the interactive terminal UI (also the default if no command is given)
 
 use crate::db::{Database, Note};
+use crate::utils::{
+    format_date_full, format_date_only, note_to_markdown, parse_markdown_file, parse_tags,
+    resolve_note, sanitize_filename,
+};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
@@ -20,6 +24,15 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
+}
+
+/// Sort order for list command
+#[derive(Clone, Copy, clap::ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum SortBy {
+    Updated,
+    Created,
+    Title,
 }
 
 /// Available CLI commands.
@@ -34,64 +47,43 @@ pub enum Commands {
     },
     /// List all notes
     List {
-        /// Filter by tag
         #[arg(short, long)]
         tag: Option<String>,
-        /// Compact one-line format (good for piping to fzf)
         #[arg(short, long)]
         oneline: bool,
-        /// Sort by: updated, created, title
         #[arg(short, long, default_value = "updated")]
-        sort: String,
-        /// Limit number of results
+        sort: SortBy,
         #[arg(short, long)]
         limit: Option<usize>,
     },
     /// Show a specific note (by ID or title pattern)
-    Show {
-        /// Note ID or title pattern to search
-        id_or_title: String,
-    },
+    Show { id_or_title: String },
     /// Edit a note (by ID or title pattern)
     Edit {
-        /// Note ID or title pattern to search
         id_or_title: String,
-        /// New title
         #[arg(short, long)]
         title: Option<String>,
-        /// New content
         #[arg(short, long)]
         content: Option<String>,
-        /// New tags (comma-separated)
         #[arg(short = 'g', long)]
         tags: Option<String>,
     },
     /// Delete a note (by ID or title pattern)
     Delete {
-        /// Note ID or title pattern to search
         id_or_title: String,
-        /// Skip confirmation prompt
         #[arg(short, long)]
         yes: bool,
     },
-    /// Search notes
-    Search {
-        /// Search query
-        query: String,
-    },
+    /// Search notes by keyword
+    Search { query: String },
     /// Export a note to a markdown file
     Export {
-        /// Note ID or title pattern to search
         id_or_title: String,
-        /// Output file path (defaults to <title>.md)
         #[arg(short, long)]
         output: Option<String>,
     },
     /// Import notes from markdown files
-    Import {
-        /// Markdown file paths
-        files: Vec<String>,
-    },
+    Import { files: Vec<String> },
     /// List all tags with note counts
     Tags,
     /// Show statistics about notes
@@ -108,362 +100,294 @@ pub fn handle_command(db: &Database, cmd: Commands) -> Result<()> {
             title,
             content,
             tags,
-        } => {
-            let tag_vec = parse_tags(tags);
-            let note = Note::new(title, content, tag_vec);
-            let id = db.create_note(&note)?;
-            println!("Note created with ID: {}", id);
-        }
+        } => cmd_add(db, title, content, tags),
         Commands::List {
             tag,
             oneline,
             sort,
             limit,
-        } => {
-            let notes = db.list_notes()?;
-
-            // Filter by tag
-            let mut filtered: Vec<Note> = if let Some(tag_filter) = tag {
-                notes
-                    .into_iter()
-                    .filter(|n| n.tags.contains(&tag_filter))
-                    .collect()
-            } else {
-                notes
-            };
-
-            // Sort
-            match sort.as_str() {
-                "created" => filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
-                "title" => {
-                    filtered.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
-                }
-                _ => filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)), // default "updated"
-            }
-
-            // Limit
-            if let Some(limit_val) = limit {
-                filtered.truncate(limit_val);
-            }
-
-            if filtered.is_empty() {
-                println!("No notes found.");
-            } else if oneline {
-                // Compact format for piping to fzf or other tools
-                for note in filtered {
-                    let tags_str = if note.tags.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [{}]", note.tags.join(", "))
-                    };
-                    println!("{}\t{}{}", note.id.unwrap(), note.title, tags_str);
-                }
-            } else {
-                // Normal format
-                for note in filtered {
-                    println!("\n[{}] {}", note.id.unwrap(), note.title);
-                    println!("Tags: {}", note.tags.join(", "));
-                    println!("Updated: {}", note.updated_at.format("%Y-%m-%d %H:%M"));
-                }
-            }
-        }
-        Commands::Show { id_or_title } => {
-            let id = resolve_note(db, &id_or_title)?;
-            if let Some(note) = db.get_note(id)? {
-                println!("\n{}", "=".repeat(50));
-                println!("Title: {}", note.title);
-                println!("Tags: {}", note.tags.join(", "));
-                println!("Created: {}", note.created_at.format("%Y-%m-%d %H:%M"));
-                println!("Updated: {}", note.updated_at.format("%Y-%m-%d %H:%M"));
-                println!("{}", "=".repeat(50));
-                println!("\n{}", note.content);
-                println!();
-            }
-        }
+        } => cmd_list(db, tag, oneline, sort, limit),
+        Commands::Show { id_or_title } => cmd_show(db, &id_or_title),
         Commands::Edit {
             id_or_title,
             title,
             content,
             tags,
-        } => {
-            let id = resolve_note(db, &id_or_title)?;
-            if let Some(note) = db.get_note(id)? {
-                let new_title = title.unwrap_or(note.title);
-                let new_content = content.unwrap_or(note.content);
-                let new_tags = tags.map(|t| parse_tags(Some(t))).unwrap_or(note.tags);
-
-                db.update_note(id, new_title, new_content, new_tags)?;
-                println!("Note {} updated.", id);
-            }
-        }
-        Commands::Delete { id_or_title, yes } => {
-            let id = resolve_note(db, &id_or_title)?;
-            let note = db.get_note(id)?;
-
-            if let Some(note) = note {
-                // Show what will be deleted
-                eprintln!("Found: [{}] {}", id, note.title);
-
-                // Ask for confirmation unless --yes flag is provided
-                if yes || confirm("Delete this note?") {
-                    db.delete_note(id)?;
-                    println!("Note {} deleted.", id);
-                } else {
-                    println!("Deletion cancelled.");
-                }
-            }
-        }
-        Commands::Search { query } => {
-            let notes = db.search_notes(&query)?;
-            if notes.is_empty() {
-                println!("No notes found matching '{}'.", query);
-            } else {
-                println!("Found {} note(s):", notes.len());
-                for note in notes {
-                    println!("\n[{}] {}", note.id.unwrap(), note.title);
-                    println!("Tags: {}", note.tags.join(", "));
-                }
-            }
-        }
+        } => cmd_edit(db, &id_or_title, title, content, tags),
+        Commands::Delete { id_or_title, yes } => cmd_delete(db, &id_or_title, yes),
+        Commands::Search { query } => cmd_search(db, &query),
         Commands::Export {
             id_or_title,
             output,
-        } => {
-            let id = resolve_note(db, &id_or_title)?;
-            if let Some(note) = db.get_note(id)? {
-                // Determine output filename
-                let filename = output.unwrap_or_else(|| {
-                    format!("{}.md", note.title.replace('/', "-").replace(' ', "_"))
-                });
+        } => cmd_export(db, &id_or_title, output),
+        Commands::Import { files } => cmd_import(db, &files),
+        Commands::Tags => cmd_tags(db),
+        Commands::Stats => cmd_stats(db),
+        Commands::Tui => Ok(()), // Never reached - TUI is handled in main.rs
+    }
+}
 
-                // Format note as markdown
-                let mut content = note.title.clone();
-                if !note.tags.is_empty() {
-                    content.push_str(&format!(
-                        "\n{}",
-                        note.tags
-                            .iter()
-                            .map(|t| format!("#{}", t))
-                            .collect::<Vec<String>>()
-                            .join(" ")
-                    ));
-                }
-                if !note.content.is_empty() {
-                    content.push_str(&format!("\n\n{}", note.content));
-                }
+fn cmd_add(db: &Database, title: String, content: String, tags: Option<String>) -> Result<()> {
+    let tag_vec = parse_tags(tags);
+    let note = Note::new(title, content, tag_vec);
+    let id = db.create_note(&note)?;
+    println!("Note created with ID: {id}");
+    Ok(())
+}
 
-                std::fs::write(&filename, content)?;
-                println!("Exported to: {}", filename);
-            }
+fn cmd_list(
+    db: &Database,
+    tag: Option<String>,
+    oneline: bool,
+    sort: SortBy,
+    limit: Option<usize>,
+) -> Result<()> {
+    let notes = db.list_notes()?;
+
+    // Filter by tag
+    let mut filtered: Vec<Note> = if let Some(tag_filter) = tag {
+        notes
+            .into_iter()
+            .filter(|n| n.tags.contains(&tag_filter))
+            .collect()
+    } else {
+        notes
+    };
+
+    // Sort
+    match sort {
+        SortBy::Created => filtered.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+        SortBy::Title => {
+            filtered.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
         }
-        Commands::Import { files } => {
-            use std::path::Path;
+        SortBy::Updated => filtered.sort_by(|a, b| b.updated_at.cmp(&a.updated_at)),
+    }
 
-            let mut imported = 0;
-            for file_path in files {
-                let path = Path::new(&file_path);
-                if !path.exists() {
-                    eprintln!("Warning: File not found: {}", file_path);
-                    continue;
-                }
+    // Limit
+    if let Some(limit_val) = limit {
+        filtered.truncate(limit_val);
+    }
 
-                let content = std::fs::read_to_string(path)?;
+    if filtered.is_empty() {
+        println!("No notes found.");
+    } else if oneline {
+        print_notes_oneline(&filtered);
+    } else {
+        print_notes_normal(&filtered);
+    }
+    Ok(())
+}
 
-                // Parse markdown file
-                if let Some((title, note_content, tags)) = parse_markdown_file(&content) {
-                    let note = Note::new(title, note_content, tags);
-                    db.create_note(&note)?;
-                    imported += 1;
-                    println!("Imported: {}", path.display());
-                } else {
-                    eprintln!("Warning: Could not parse: {}", file_path);
-                }
-            }
-            println!("\nImported {} note(s)", imported);
+fn print_notes_oneline(notes: &[Note]) {
+    for note in notes {
+        let tags_str = if note.tags.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", note.tags.join(", "))
+        };
+        if let Some(id) = note.id {
+            println!("{id}\t{}{tags_str}", note.title);
         }
-        Commands::Tags => {
-            let notes = db.list_notes()?;
-            let mut tag_counts: std::collections::HashMap<String, usize> =
-                std::collections::HashMap::new();
+    }
+}
 
-            for note in notes {
-                for tag in note.tags {
-                    *tag_counts.entry(tag).or_insert(0) += 1;
-                }
-            }
-
-            if tag_counts.is_empty() {
-                println!("No tags found.");
-            } else {
-                let mut tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
-                tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-
-                println!("Tags ({} total):", tags.len());
-                for (tag, count) in tags {
-                    println!("  {} ({})", tag, count);
-                }
-            }
-        }
-        Commands::Stats => {
-            let notes = db.list_notes()?;
-
-            if notes.is_empty() {
-                println!("No notes yet!");
-                return Ok(());
-            }
-
-            let total = notes.len();
-            let mut total_size = 0;
-            let mut tag_set = std::collections::HashSet::new();
-            let mut oldest = &notes[0];
-            let mut newest = &notes[0];
-
-            for note in &notes {
-                total_size += note.content.len() + note.title.len();
-                for tag in &note.tags {
-                    tag_set.insert(tag.clone());
-                }
-                if note.created_at < oldest.created_at {
-                    oldest = note;
-                }
-                if note.updated_at > newest.updated_at {
-                    newest = note;
-                }
-            }
-
-            println!("\n{}", "=".repeat(50));
-            println!("qnote Statistics");
-            println!("{}", "=".repeat(50));
-            println!("Total notes:      {}", total);
-            println!("Unique tags:      {}", tag_set.len());
-            println!("Total size:       {:.2} KB", total_size as f64 / 1024.0);
+fn print_notes_normal(notes: &[Note]) {
+    for note in notes {
+        if let Some(id) = note.id {
             println!(
-                "Oldest note:      {} ({})",
-                oldest.title,
-                oldest.created_at.format("%Y-%m-%d")
+                "\n[{id}] {}\nTags: {}\nUpdated: {}",
+                note.title,
+                note.tags.join(", "),
+                format_date_full(&note.updated_at)
             );
-            println!(
-                "Most recent:      {} ({})",
-                newest.title,
-                newest.updated_at.format("%Y-%m-%d %H:%M")
-            );
-            println!("{}", "=".repeat(50));
         }
-        Commands::Tui => {
-            // This branch is never reached - TUI command is handled in main.rs before calling this function
-            unreachable!()
+    }
+}
+
+fn cmd_export(db: &Database, id_or_title: &str, output: Option<String>) -> Result<()> {
+    let id = resolve_note(db, id_or_title)?;
+    if let Some(note) = db.get_note(id)? {
+        let filename = output.unwrap_or_else(|| format!("{}.md", sanitize_filename(&note.title)));
+        let content = note_to_markdown(&note);
+
+        std::fs::write(&filename, content)?;
+        println!("Exported to: {filename}");
+    }
+    Ok(())
+}
+
+fn cmd_import(db: &Database, files: &[String]) -> Result<()> {
+    use std::path::Path;
+
+    let mut imported = 0;
+    for file_path in files {
+        let path = Path::new(file_path);
+        if !path.exists() {
+            eprintln!("Warning: File not found: {file_path}");
+            continue;
+        }
+
+        let content = std::fs::read_to_string(path)?;
+
+        if let Some((title, note_content, tags)) = parse_markdown_file(&content) {
+            let note = Note::new(title, note_content, tags);
+            db.create_note(&note)?;
+            imported += 1;
+            let display_path = path.display();
+            println!("Imported: {display_path}");
+        } else {
+            eprintln!("Warning: Could not parse: {file_path}");
+        }
+    }
+    println!("\nImported {imported} note(s)");
+    Ok(())
+}
+
+fn cmd_tags(db: &Database) -> Result<()> {
+    let notes = db.list_notes()?;
+    let mut tag_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for note in notes {
+        for tag in note.tags {
+            *tag_counts.entry(tag).or_insert(0) += 1;
+        }
+    }
+
+    if tag_counts.is_empty() {
+        println!("No tags found.");
+    } else {
+        let mut tags: Vec<(String, usize)> = tag_counts.into_iter().collect();
+        tags.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        let total = tags.len();
+        println!("Tags ({total} total):");
+        for (tag, count) in tags {
+            println!("  {tag} ({count})");
         }
     }
     Ok(())
 }
 
-/// Parses a comma-separated string of tags into a vector.
-/// Trims whitespace and filters out empty strings.
-///
-/// Example: "work, important, todo" -> vec!["work", "important", "todo"]
-fn parse_tags(tags: Option<String>) -> Vec<String> {
-    tags.map(|t| {
-        t.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect()
-    })
-    .unwrap_or_default()
+fn cmd_show(db: &Database, id_or_title: &str) -> Result<()> {
+    if let Some(note) = db.get_note(resolve_note(db, id_or_title)?)? {
+        let sep = "=".repeat(50);
+        println!(
+            "\n{sep}\nTitle: {}\nTags: {}\nCreated: {}\nUpdated: {}\n{sep}\n\n{}\n",
+            note.title,
+            note.tags.join(", "),
+            format_date_full(&note.created_at),
+            format_date_full(&note.updated_at),
+            note.content
+        );
+    }
+    Ok(())
 }
 
-/// Resolves a note by ID or title pattern.
-/// Returns the note ID if found, or an error if ambiguous/not found.
-fn resolve_note(db: &Database, id_or_title: &str) -> Result<i64> {
-    // Try parsing as ID first
-    if let Ok(id) = id_or_title.parse::<i64>() {
-        // Verify the ID exists
-        if db.get_note(id)?.is_some() {
-            return Ok(id);
+fn cmd_edit(
+    db: &Database,
+    id_or_title: &str,
+    title: Option<String>,
+    content: Option<String>,
+    tags: Option<String>,
+) -> Result<()> {
+    let id = resolve_note(db, id_or_title)?;
+    if let Some(note) = db.get_note(id)? {
+        let new_title = title.unwrap_or(note.title);
+        let new_content = content.unwrap_or(note.content);
+        let new_tags = tags.map(|t| parse_tags(Some(t))).unwrap_or(note.tags);
+
+        db.update_note(id, new_title, new_content, &new_tags)?;
+        println!("Note {id} updated.");
+    }
+    Ok(())
+}
+
+fn cmd_delete(db: &Database, id_or_title: &str, yes: bool) -> Result<()> {
+    let id = resolve_note(db, id_or_title)?;
+    if let Some(note) = db.get_note(id)? {
+        eprintln!("Found: [{}] {}", id, note.title);
+        if yes || confirm("Delete this note?") {
+            db.delete_note(id)?;
+            println!("Note {id} deleted.");
         } else {
-            anyhow::bail!("Note with ID {} not found", id);
+            println!("Deletion cancelled.");
         }
     }
+    Ok(())
+}
 
-    // Search by title pattern (case-insensitive)
-    let all_notes = db.list_notes()?;
-    let matches: Vec<Note> = all_notes
-        .into_iter()
-        .filter(|n| n.title.to_lowercase().contains(&id_or_title.to_lowercase()))
-        .collect();
-
-    match matches.len() {
-        0 => anyhow::bail!("No notes found matching '{}'", id_or_title),
-        1 => Ok(matches[0].id.unwrap()),
-        _ => {
-            eprintln!("Multiple notes found matching '{}':", id_or_title);
-            for note in &matches {
-                eprintln!("  [{}] {}", note.id.unwrap(), note.title);
+fn cmd_search(db: &Database, query: &str) -> Result<()> {
+    let notes = db.search_notes(query)?;
+    if notes.is_empty() {
+        println!("No notes found matching '{query}'.");
+    } else {
+        println!("Found {} note(s):", notes.len());
+        for note in notes {
+            if let Some(id) = note.id {
+                println!("\n[{id}] {}\nTags: {}", note.title, note.tags.join(", "));
             }
-            anyhow::bail!("Please specify a more specific pattern or use the exact ID")
         }
     }
+    Ok(())
+}
+
+fn cmd_stats(db: &Database) -> Result<()> {
+    let notes = db.list_notes()?;
+    if notes.is_empty() {
+        println!("No notes yet!");
+        return Ok(());
+    }
+
+    let (total_size, tag_set, oldest, newest) = notes.iter().fold(
+        (0, std::collections::HashSet::new(), &notes[0], &notes[0]),
+        |(size, mut tags, old, new), note| {
+            tags.extend(note.tags.iter().cloned());
+            (
+                size + note.content.len() + note.title.len(),
+                tags,
+                if note.created_at < old.created_at {
+                    note
+                } else {
+                    old
+                },
+                if note.updated_at > new.updated_at {
+                    note
+                } else {
+                    new
+                },
+            )
+        },
+    );
+
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "KB display doesn't require exact precision"
+    )]
+    let size_kb = total_size as f64 / 1024.0;
+    let sep = "=".repeat(50);
+    println!(
+        "\n{sep}\nqnote Statistics\n{sep}\n\
+        Total notes:      {}\n\
+        Unique tags:      {}\n\
+        Total size:       {size_kb:.2} KB\n\
+        Oldest note:      {} ({})\n\
+        Most recent:      {} ({})\n{sep}",
+        notes.len(),
+        tag_set.len(),
+        oldest.title,
+        format_date_only(&oldest.created_at),
+        newest.title,
+        format_date_full(&newest.updated_at)
+    );
+    Ok(())
 }
 
 /// Prompts user for confirmation. Returns true if user confirms.
 fn confirm(prompt: &str) -> bool {
     use std::io::{self, Write};
-
-    print!("{} (y/N): ", prompt);
-    io::stdout().flush().unwrap();
-
+    print!("{prompt} (y/N): ");
+    let _ = io::stdout().flush();
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
-
+    let _ = io::stdin().read_line(&mut input);
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
-}
-
-/// Parses a markdown file into (title, content, tags).
-/// Expected format:
-/// Line 1: Title
-/// Line 2 (optional): #tag1 #tag2
-/// Remaining: Content
-fn parse_markdown_file(content: &str) -> Option<(String, String, Vec<String>)> {
-    let content = content.trim();
-    if content.is_empty() {
-        return None;
-    }
-
-    let mut lines = content.lines();
-    let title = lines.next()?.trim().to_string();
-
-    if title.is_empty() {
-        return None;
-    }
-
-    let mut tags = Vec::new();
-    let mut note_content = Vec::new();
-    let mut found_tags = false;
-
-    for line in lines {
-        let trimmed = line.trim();
-
-        // Check if line 2 contains tags
-        if !found_tags && !trimmed.is_empty() {
-            if trimmed.starts_with('#') {
-                // Parse tags
-                tags = trimmed
-                    .split_whitespace()
-                    .filter(|word| word.starts_with('#'))
-                    .map(|tag| tag.trim_start_matches('#').to_string())
-                    .filter(|tag| !tag.is_empty())
-                    .collect();
-                found_tags = true;
-                continue;
-            } else {
-                note_content.push(line);
-                found_tags = true;
-            }
-        } else if found_tags || !trimmed.is_empty() {
-            note_content.push(line);
-            found_tags = true;
-        }
-    }
-
-    let final_content = note_content.join("\n").trim().to_string();
-    Some((title, final_content, tags))
 }

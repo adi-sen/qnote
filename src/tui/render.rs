@@ -1,23 +1,26 @@
 use super::app::{App, Screen};
 use super::markdown::markdown_to_lines;
+use crate::utils::format_date_short;
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::{
+    Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Terminal,
 };
 
-const HIGHLIGHT_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const TITLE_STYLE: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const META_STYLE: Style = Style::new().fg(Color::DarkGray);
-const DATE_STYLE: Style = Style::new().fg(Color::DarkGray);
-const SEARCH_TITLE_STYLE: Style = Style::new().fg(Color::Cyan);
-const EMPTY_STYLE: Style = Style::new().fg(Color::DarkGray);
-const HELP_STYLE: Style = Style::new().fg(Color::Gray);
+// UI layout constants
+const LIST_WIDTH_PERCENT: u16 = 40;
+const PREVIEW_WIDTH_PERCENT: u16 = 60;
+const LIST_BORDER_PADDING: u16 = 4;
+
+const CYAN_BOLD: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const CYAN: Style = Style::new().fg(Color::Cyan);
+const DARK_GRAY: Style = Style::new().fg(Color::DarkGray);
+const GRAY: Style = Style::new().fg(Color::Gray);
 
 const HELP_LIST_MODE: &str = "j/k navigate  ^j/k scroll  g/G top/bottom  ⏎ edit  n new  e edit  d delete  s sort  x export  / search  ESC clear  q quit";
 const HELP_SEARCH_MODE: &str = "^n/p navigate  ⏎ accept  ESC cancel";
@@ -82,7 +85,7 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
     }
 }
 
-fn calculate_footer_height(app: &App, width: u16) -> u16 {
+const fn calculate_footer_height(app: &App, width: u16) -> u16 {
     let help_text = match app.screen {
         Screen::List => HELP_LIST_MODE,
         Screen::SearchMode => HELP_SEARCH_MODE,
@@ -97,7 +100,7 @@ fn calculate_footer_height(app: &App, width: u16) -> u16 {
 }
 
 fn render_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
-    if let Some(ref msg) = app.message {
+    if let Some(msg) = &app.message {
         let status = Paragraph::new(msg.as_str()).style(Style::default().fg(Color::Yellow));
         f.render_widget(status, area);
     }
@@ -157,10 +160,12 @@ fn highlight_matches(text: &str, indices: &[usize]) -> Vec<Span<'static>> {
 }
 
 fn render_split_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    // Split horizontally: notes list on left, preview on right
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([
+            Constraint::Percentage(LIST_WIDTH_PERCENT),
+            Constraint::Percentage(PREVIEW_WIDTH_PERCENT),
+        ])
         .split(area);
 
     render_list(f, app, chunks[0]);
@@ -168,7 +173,7 @@ fn render_split_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 }
 
 fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
-    let list_width = area.width.saturating_sub(4) as usize; // Account for borders and padding
+    let list_width = area.width.saturating_sub(LIST_BORDER_PADDING) as usize;
     let has_search = !app.search_query.is_empty();
 
     let items: Vec<ListItem> = app
@@ -176,7 +181,7 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(idx, note)| {
-            let date_str = note.updated_at.format("%b %d").to_string();
+            let date_str = format_date_short(&note.updated_at);
             let date_width = date_str.len();
 
             // Calculate available width for title
@@ -192,18 +197,20 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 note.title.clone()
             };
 
-            // Build title with fuzzy match highlighting
-            let mut spans = if has_search && idx < app.match_indices.len() {
+            // Build line with title, spacing, and date
+            let title_spans = if has_search && idx < app.match_indices.len() {
                 highlight_matches(&title_display, &app.match_indices[idx])
             } else {
                 vec![Span::raw(title_display.clone())]
             };
 
-            // Create spacing to right-align the date
             let spacing = " ".repeat(available_width.saturating_sub(title_display.len()));
 
-            spans.push(Span::raw(spacing));
-            spans.push(Span::styled(date_str, DATE_STYLE));
+            let spans = [
+                title_spans,
+                vec![Span::raw(spacing), Span::styled(date_str, DARK_GRAY)],
+            ]
+            .concat();
 
             ListItem::new(vec![Line::from(spans)])
         })
@@ -211,15 +218,17 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
     // Dynamic title based on search mode
     let title = if app.screen == Screen::SearchMode {
-        format!("Search: {}_", app.input_buffer)
+        let input = &app.input_buffer;
+        format!("Search: {input}_")
     } else if app.search_query.is_empty() {
         "Notes".to_string()
     } else {
-        format!("Notes (filtered: {})", app.search_query)
+        let query = &app.search_query;
+        format!("Notes (filtered: {query})")
     };
 
     let title_style = if app.screen == Screen::SearchMode {
-        SEARCH_TITLE_STYLE
+        CYAN
     } else {
         Style::default()
     };
@@ -231,7 +240,7 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
                 .border_set(border::ROUNDED)
                 .title(Span::styled(title, title_style)),
         )
-        .highlight_style(HIGHLIGHT_STYLE)
+        .highlight_style(CYAN_BOLD)
         .highlight_symbol("▌ ");
 
     f.render_stateful_widget(list, area, &mut app.list_state);
@@ -239,33 +248,30 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
 fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
     if let Some(note) = app.get_selected_note() {
-        // Build metadata line more efficiently
+        // Build metadata line
         let metadata = if note.tags.is_empty() {
-            format!("{}", note.updated_at.format("%b %d %H:%M"))
+            format_date_short(&note.updated_at)
         } else {
-            // Pre-allocate string capacity to reduce reallocations
-            let tags_str = note.tags.join(", ");
-            let date_str = note.updated_at.format("%b %d %H:%M").to_string();
-            let mut metadata = String::with_capacity(tags_str.len() + date_str.len() + 3);
-            metadata.push_str(&tags_str);
-            metadata.push_str(" • ");
-            metadata.push_str(&date_str);
-            metadata
+            let tags = note.tags.join(", ");
+            let updated = format_date_short(&note.updated_at);
+            format!("{tags} • {updated}")
         };
 
         // Build content with title and body using cached styles
-        let mut content_lines = vec![
-            Line::from(vec![Span::styled(&note.title, TITLE_STYLE)]),
-            Line::from(vec![Span::styled(metadata, META_STYLE)]),
-            Line::from(""),
-        ];
-
-        // Add markdown content
-        content_lines.extend(markdown_to_lines(&note.content));
+        let content_lines = [
+            vec![
+                Line::from(vec![Span::styled(&note.title, CYAN_BOLD)]),
+                Line::from(vec![Span::styled(metadata, DARK_GRAY)]),
+                Line::from(""),
+            ],
+            markdown_to_lines(&note.content),
+        ]
+        .concat();
 
         // Build title with note position and scroll indicator
         let note_idx = app.list_state.selected().unwrap_or(0) + 1;
         let total_notes = app.notes.len();
+        #[allow(clippy::cast_possible_truncation)]
         let content_height = content_lines.len() as u16;
         let visible_height = area.height.saturating_sub(3); // Subtract borders and padding
 
@@ -276,9 +282,9 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
             } else {
                 0
             };
-            format!("Preview [{}/{}] ↓{}%", note_idx, total_notes, scroll_pct)
+            format!("Preview [{note_idx}/{total_notes}] ↓{scroll_pct}%")
         } else {
-            format!("Preview [{}/{}]", note_idx, total_notes)
+            format!("Preview [{note_idx}/{total_notes}]")
         };
 
         let preview = Paragraph::new(content_lines)
@@ -299,7 +305,7 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
                     .border_set(border::ROUNDED)
                     .title("Preview"),
             )
-            .style(EMPTY_STYLE);
+            .style(DARK_GRAY);
         f.render_widget(empty, area);
     }
 }
@@ -307,16 +313,18 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
 fn render_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
     let help_text = match app.screen {
         Screen::List => {
-            let count = format!("{} notes", app.notes.len());
+            let count = app.notes.len();
             let sort_info = if app.search_query.is_empty() {
-                format!(" [{}]", app.sort_mode.name())
+                let sort_name = app.sort_mode.name();
+                format!(" [{sort_name}]")
             } else {
                 String::new()
             };
-            format!("{}{} | {}", count, sort_info, HELP_LIST_MODE)
+            format!("{count} notes{sort_info} | {HELP_LIST_MODE}")
         }
         Screen::SearchMode => {
-            format!("{} found | {}", app.notes.len(), HELP_SEARCH_MODE)
+            let found = app.notes.len();
+            format!("{found} found | {HELP_SEARCH_MODE}")
         }
     };
 
@@ -336,6 +344,6 @@ fn render_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
         vec![Line::from(help_text)]
     };
 
-    let help = Paragraph::new(lines).style(HELP_STYLE);
+    let help = Paragraph::new(lines).style(GRAY);
     f.render_widget(help, area);
 }

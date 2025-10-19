@@ -7,7 +7,7 @@ pub use app::App;
 
 use crate::db::Database;
 use anyhow::Result;
-use crossterm::{
+use ratatui::crossterm::{
     event::DisableMouseCapture,
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -34,7 +34,7 @@ pub fn run_tui(db: Database) -> Result<()> {
     terminal.show_cursor()?;
 
     if let Err(err) = res {
-        println!("{:?}", err);
+        println!("{err:?}");
     }
 
     Ok(())

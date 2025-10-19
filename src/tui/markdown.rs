@@ -17,24 +17,28 @@ pub fn markdown_to_lines(markdown: &str) -> Vec<Line<'static>> {
     markdown
         .lines()
         .map(|line| {
-            if let Some(header) = line.strip_prefix("# ") {
-                Line::from(Span::styled(header.to_string(), H1_STYLE))
-            } else if let Some(header) = line.strip_prefix("## ") {
-                Line::from(Span::styled(header.to_string(), H2_STYLE))
-            } else if line.starts_with("- ") || line.starts_with("* ") {
-                Line::from(vec![
-                    Span::styled("  • ".to_string(), BULLET_STYLE),
-                    Span::raw(
-                        line.trim_start_matches("- ")
-                            .trim_start_matches("* ")
-                            .to_string(),
-                    ),
-                ])
-            } else if line.starts_with("```") {
-                Line::from(Span::styled(line.to_string(), CODE_STYLE))
-            } else {
-                Line::from(line.to_string())
-            }
+            line.strip_prefix("# ")
+                .map(|header| Line::from(Span::styled(header.to_string(), H1_STYLE)))
+                .or_else(|| {
+                    line.strip_prefix("## ")
+                        .map(|header| Line::from(Span::styled(header.to_string(), H2_STYLE)))
+                })
+                .unwrap_or_else(|| {
+                    if line.starts_with("- ") || line.starts_with("* ") {
+                        Line::from(vec![
+                            Span::styled("  • ".to_string(), BULLET_STYLE),
+                            Span::raw(
+                                line.trim_start_matches("- ")
+                                    .trim_start_matches("* ")
+                                    .to_string(),
+                            ),
+                        ])
+                    } else if line.starts_with("```") {
+                        Line::from(Span::styled(line.to_string(), CODE_STYLE))
+                    } else {
+                        Line::from(line.to_string())
+                    }
+                })
         })
         .collect()
 }

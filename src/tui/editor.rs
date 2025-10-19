@@ -1,8 +1,9 @@
 use crate::db::Note;
+use crate::utils::parse_markdown_file;
 use anyhow::{Context, Result};
-use crossterm::{
+use ratatui::crossterm::{
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use std::{
     env, fs,
@@ -40,7 +41,7 @@ pub fn open_editor_for_new_note() -> Result<Option<(String, String, Vec<String>)
     // Read and parse the edited content
     let content = fs::read_to_string(&temp_path)?;
 
-    parse_note_file(&content)
+    Ok(parse_markdown_file(&content))
 }
 
 /// Opens the user's editor with an existing note's content pre-filled.
@@ -64,7 +65,7 @@ pub fn open_editor_for_edit(note: &Note) -> Result<Option<(String, String, Vec<S
             if i > 0 {
                 writer.write_all(b" ")?;
             }
-            write!(writer, "#{}", tag)?;
+            write!(writer, "#{tag}")?;
         }
     }
 
@@ -82,7 +83,7 @@ pub fn open_editor_for_edit(note: &Note) -> Result<Option<(String, String, Vec<S
     // Read back and parse the edited content
     let content = fs::read_to_string(&temp_path)?;
 
-    parse_note_file(&content)
+    Ok(parse_markdown_file(&content))
 }
 
 /// Opens the user's preferred editor for the given file path.
@@ -98,7 +99,7 @@ fn open_editor(path: &std::path::Path) -> Result<()> {
     let status = Command::new(&editor)
         .arg(path)
         .status()
-        .context(format!("Failed to open editor: {}", editor))?;
+        .context(format!("Failed to open editor: {editor}"))?;
 
     // Restore TUI mode after editor closes
     execute!(io::stdout(), EnterAlternateScreen)?;
@@ -109,82 +110,4 @@ fn open_editor(path: &std::path::Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Parses a note file according to qnote's format:
-/// - Line 1: Title (required)
-/// - Line 2: Hashtags (optional, must start with #)
-/// - Remaining lines: Note content (body)
-///
-/// Returns None if the note is empty or invalid.
-/// Returns Some((title, content, tags)) for a valid note.
-fn parse_note_file(content: &str) -> Result<Option<(String, String, Vec<String>)>> {
-    let content = content.trim();
-    if content.is_empty() {
-        return Ok(None);
-    }
-
-    let mut lines = content.lines();
-    let mut title = String::new();
-    let mut tags = Vec::new();
-    let mut note_content = Vec::new();
-
-    // Line 1: Extract title
-    if let Some(first_line) = lines.next() {
-        title = first_line.trim().to_string();
-    }
-
-    // Line 2: Check for hashtags, otherwise it's content
-    let mut started_content = false;
-    for line in lines {
-        if !started_content {
-            let trimmed = line.trim();
-
-            if trimmed.starts_with('#') {
-                // Parse hashtags: split on whitespace and extract tag names
-                tags = trimmed
-                    .split_whitespace()
-                    .filter(|word| word.starts_with('#'))
-                    .map(|tag| tag.trim_start_matches('#').to_string())
-                    .filter(|tag| !tag.is_empty())
-                    .collect();
-                started_content = true;
-                continue;
-            } else if !trimmed.is_empty() {
-                // Not a tag line, so it's the start of content
-                note_content.push(line);
-                started_content = true;
-            }
-            // Skip empty lines between title and content/tags
-        } else {
-            // Collect all remaining lines as content
-            note_content.push(line);
-        }
-    }
-
-    let note_content = note_content.join("\n").trim().to_string();
-
-    // Title fallback: if no title, use first word of content
-    if title.is_empty() {
-        if !note_content.is_empty() {
-            // Extract first word, stripping markdown headers if present
-            let first_line = note_content.lines().next().unwrap_or("");
-            let cleaned = first_line
-                .trim_start_matches("# ")
-                .trim_start_matches("## ")
-                .trim_start_matches("### ")
-                .trim();
-
-            title = cleaned
-                .split_whitespace()
-                .next()
-                .unwrap_or("Untitled")
-                .to_string();
-        } else {
-            // Empty note: no title and no content, cancel creation
-            return Ok(None);
-        }
-    }
-
-    Ok(Some((title, note_content, tags)))
 }

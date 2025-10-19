@@ -1,6 +1,7 @@
 mod cli;
 mod db;
 mod tui;
+mod utils;
 
 use anyhow::Result;
 use clap::Parser;
@@ -28,7 +29,10 @@ fn get_db_path() -> PathBuf {
 fn main() -> Result<()> {
     // Initialize database connection
     let db_path = get_db_path();
-    let db = Database::new(db_path.to_str().unwrap())?;
+    let db_path_str = db_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid database path"))?;
+    let db = Database::new(db_path_str)?;
 
     // Parse command-line arguments
     let cli = Cli::parse();
