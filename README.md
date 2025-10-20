@@ -1,215 +1,299 @@
 # qnote
 
-A fast, lightweight terminal-based note-taking application written in Rust.
+> **Q**uick **Note** - A fast, lightweight terminal-based note-taking application written in Rust
 
-**qnote** = **Q**uick **Note** - your terminal-based note-taking companion.
+[![Crates.io](https://img.shields.io/crates/v/qnote.svg)](https://crates.io/crates/qnote)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
 
-- **Dual Interface**: Command-line interface for scripting and interactive TUI for browsing
-- **Fast Search**: Fuzzy search across titles, content, and tags
-- **Flexible Organization**: Tag your notes and sort by title, created date, or updated date
-- **External Editor Integration**: Edit notes in your preferred editor ($EDITOR, or vi)
-- **Markdown Support**: Basic markdown rendering in the preview pane
-- **Lightweight**: ~1MB binary with system SQLite, ~2.6MB fully portable
-- **Cross-platform**: Works on Linux, macOS, and Windows
-
-## Installation
-
-### Binary Download
-
-Download pre-built binaries from the [Releases](https://github.com/adi-sen/qnote/releases) page.
-
-**Linux/macOS:**
-```bash
-# Download the appropriate binary for your platform
-chmod +x qnote-*
-sudo mv qnote-* /usr/local/bin/qnote
-```
-
-**Windows:**
-- Download `qnote-windows-x86_64.exe`
-- Rename to `qnote.exe`
-- Add to PATH or run directly
-
-### From Crates.io
-
-```bash
-cargo install qnote
-```
-
-### From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/adi-sen/qnote.git
-cd qnote
-
-# Build and install (portable version recommended)
-cargo install --path . --features bundled
-```
+Fast, lightweight note-taking with CLI and TUI interfaces. Tag-based organization with fuzzy search, external editor integration, and markdown preview.
 
 ## Quick Start
 
 ```bash
-# Launch interactive TUI (default)
+# Install
+cargo install qnote
+
+# Launch interactive TUI
 qnote
 
-# Or explicitly
-qnote tui
-
-# Add a note from command line
-qnote add "My First Note" "This is the content of my note" --tags work,important
-
-# List all notes
+# CLI usage
+qnote add "My Note" "Content here" --tags work,ideas
 qnote list
-
-# Search notes
 qnote search "keyword"
 ```
 
-## Usage
+## Installation
 
-### Command-Line Interface
+<details>
+<summary><b>From Crates.io</b> (Recommended)</summary>
 
 ```bash
-# Create a new note
+cargo install qnote
+```
+</details>
+
+<details>
+<summary><b>Pre-built Binary</b></summary>
+
+**Linux/macOS (one-liner):**
+```bash
+curl -sSL https://raw.githubusercontent.com/adi-sen/qnote/master/scripts/install.sh | bash
+```
+
+**Manual download:**
+- Download from [Releases](https://github.com/adi-sen/qnote/releases)
+- Extract and move to PATH
+
+**Windows:**
+- Download `qnote-Windows-x86_64.exe` from [Releases](https://github.com/adi-sen/qnote/releases)
+- Rename to `qnote.exe` and add to PATH
+</details>
+
+<details>
+<summary><b>From Source</b></summary>
+
+```bash
+git clone https://github.com/adi-sen/qnote.git
+cd qnote
+cargo install --path . --features bundled  # Portable version
+```
+
+**Build variants:**
+- `--features bundled` - Bundled SQLite (portable, larger binary)
+- Default - System SQLite (smaller, requires SQLite installed)
+</details>
+
+## Usage
+
+### CLI Commands
+
+<details>
+<summary><b>Basic Operations</b></summary>
+
+```bash
+# Create
 qnote add <title> <content> [--tags tag1,tag2]
 
-# List all notes
-qnote list
-qnote list --oneline              # Compact format for piping to fzf
-qnote list --sort title           # Sort by title (updated, created, title)
-qnote list --limit 10             # Show only 10 most recent
+# Read
+qnote list [--tag work] [--sort title] [--limit 10]
+qnote show <id|pattern>
 
-# List notes with specific tag
-qnote list --tag work
+# Update
+qnote edit <id|pattern> [--title "..."] [--content "..."]
 
-# Show a note (by ID or title pattern)
-qnote show 42                     # By ID
-qnote show "shopping"             # By title pattern
+# Delete
+qnote delete <id|pattern> [--yes]
+```
+</details>
 
-# Edit a note (by ID or title pattern)
-qnote edit 42 --title "New Title"
-qnote edit "shopping" --content "New content"
+<details>
+<summary><b>Search & Organization</b></summary>
 
-# Delete a note (with confirmation)
-qnote delete 42
-qnote delete "meeting" --yes      # Skip confirmation
-
-# Search notes
-qnote search <query>
-
-# Export/Import
-qnote export "shopping" -o shopping.md
-qnote import notes/*.md
+```bash
+# Search
+qnote search "keyword"
 
 # Tag management
-qnote tags                        # List all tags with counts
+qnote tags                # List all tags with counts
+qnote list --tag work     # Filter by tag
+
+# Sorting
+qnote list --sort updated  # updated (default), created, title
+```
+</details>
+
+<details>
+<summary><b>Import/Export</b></summary>
+
+```bash
+# Export note to markdown
+qnote export <id|pattern> [-o output.md]
+
+# Import from markdown files
+qnote import notes/*.md
 
 # Statistics
-qnote stats                       # Show note statistics
-
-# Launch TUI
-qnote tui
+qnote stats
 ```
+</details>
+
 ### Interactive TUI
 
-#### Navigation
-- `j` / `↓` - Move down
-- `k` / `↑` - Move up
-- `g` - Jump to top
-- `G` - Jump to bottom
-- `Ctrl+j` - Scroll preview down
-- `Ctrl+k` - Scroll preview up
+<details>
+<summary><b>Keybindings</b></summary>
 
-#### Actions
-- `n` / `a` - Create new note
-- `e` / `Enter` - Edit selected note
-- `d` - Delete selected note
-- `x` - Export note to markdown file
-- `/` - Enter search mode
-- `Esc` - Clear search / cancel
-- `s` - Cycle sort mode (updated, title, created)
+**Navigation:**
+- `j/k` or `↓/↑` - Move selection
+- `g/G` - Jump to top/bottom
+- `Ctrl+j/k` - Scroll preview
+
+**Actions:**
+- `n` or `a` - New note
+- `e` or `Enter` - Edit note
+- `d` - Delete note
+- `x` - Export to markdown
+- `/` - Search mode
+- `s` - Cycle sort mode
+- `Esc` - Clear search/cancel
 - `q` - Quit
 
-#### Search Mode
-- Type to filter notes (fuzzy matching)
-- `Ctrl+n` - Next match
-- `Ctrl+p` - Previous match
+**Search Mode:**
+- Type to filter (fuzzy matching)
+- `Ctrl+n/p` - Next/previous match
 - `Enter` - Select note
 - `Esc` - Exit search
+</details>
 
-## Note Format
+## Configuration
 
-When creating or editing notes in your external editor, use this format:
+<details>
+<summary><b>Setup & Location</b></summary>
 
+```bash
+# Generate config file
+qnote config
+
+# View current config
+qnote config --show
 ```
+
+**Config locations:**
+- Linux/BSD: `~/.config/qnote/config.toml`
+- macOS: `~/Library/Application Support/qnote/config.toml`
+- Windows: `%APPDATA%\qnote\config.toml`
+
+**Database locations:**
+- Linux: `~/.local/share/qnote/notes.db`
+- macOS: `~/Library/Application Support/qnote/notes.db`
+- Windows: `%APPDATA%\qnote\notes.db`
+</details>
+
+<details>
+<summary><b>Configuration Options</b></summary>
+
+```toml
+[ui]
+split_ratio = 0.4                    # List pane width (0.1-0.9)
+message_display_keypresses = 5       # Status message duration
+preview_scroll_step = 3              # Lines per scroll
+preview_max_scroll_buffer = 10       # Preview scroll bounds
+header_lines = 3                     # Preview header lines
+max_markdown_formatting_buffer = 10  # Markdown formatting buffer
+
+[editor]
+default_editor = "nvim"              # Override $EDITOR (optional)
+secure_temp_files = true             # 0600 permissions (Unix only)
+
+[keybindings]
+quit = "q"
+new_note = "n"
+delete = "d"
+edit = "e"
+search = "/"
+export = "x"
+sort = "s"
+goto_top = "g"
+goto_bottom = "G"
+move_down = "j"
+move_up = "k"
+
+[database]
+wal_mode = true                      # Write-Ahead Logging
+cache_size_kb = -64000               # 64MB cache (negative = KB)
+synchronous = "NORMAL"               # OFF, NORMAL, FULL, EXTRA
+temp_store = "MEMORY"                # DEFAULT, FILE, MEMORY
+```
+</details>
+
+<details>
+<summary><b>Note Format</b></summary>
+
+When editing notes in external editor:
+
+```markdown
 Note Title
 #tag1 #tag2 #tag3
 
 Note content goes here.
-You can use multiple lines.
+Multiple lines supported.
 ```
 
-- **Line 1**: Note title
-- **Line 2**: (Optional) Tags prefixed with `#`
-- **Line 3**: Blank line
-- **Line 4+**: Note content
-
-## Configuration
-
-### Database Location
-
-Notes are stored in:
-- **Linux**: `~/.local/share/qnote/notes.db`
-- **macOS**: `~/Library/Application Support/qnote/notes.db`
-- **Windows**: `C:\Users\<User>\AppData\Roaming\qnote\notes.db`
-
-### Editor Selection
-
-qnote uses your preferred editor:
-1. `$EDITOR` environment variable
-2. `vi` (fallback)
-
-Set your editor:
-```bash
-export EDITOR=nano  # or nvim, vim, code, etc.
-```
-
-## Building from Source
-
-```bash
-# Portable version (bundled SQLite, recommended for distribution)
-cargo build --release --features bundled
-
-# Small version (requires system SQLite)
-cargo build --release
-```
-
-The bundled version (~2.6MB) is self-contained and works everywhere. The small version (~1MB) requires SQLite to be installed on the system.
+- **Line 1**: Title
+- **Line 2**: Tags (optional, `#` prefix)
+- **Line 3**: Blank separator
+- **Line 4+**: Content
+</details>
 
 ## Development
 
-### Dependencies
-- Rust 2024 edition
-- SQLite (if not using bundled feature)
+<details>
+<summary><b>Project Structure</b></summary>
 
-### Project Structure
 ```
-qnote/
-├── src/
-│   ├── main.rs       # Entry point
-│   ├── cli.rs        # CLI commands
-│   ├── db.rs         # Database operations
-│   └── tui/          # Terminal UI
-│       ├── app.rs    # Application state
-│       ├── render.rs # UI rendering
-│       ├── editor.rs # External editor integration
-│       └── markdown.rs # Markdown rendering
-├── Cargo.toml
-└── README.md
+src/
+├── main.rs
+├── cli.rs              # CLI definitions
+├── db.rs               # Database layer
+├── commands/           # Command handlers
+│   ├── note_ops.rs     # CRUD operations
+│   ├── list.rs         # List, tags, stats
+│   ├── io.rs           # Import/export
+│   └── config.rs       # Config management
+├── config/             # Configuration
+│   ├── ui.rs
+│   ├── keybindings.rs
+│   ├── editor.rs
+│   └── database.rs
+├── utils/              # Utilities
+│   ├── formatting.rs
+│   ├── parsing.rs
+│   ├── conversion.rs
+│   └── interaction.rs
+└── tui/                # Terminal UI
+    ├── app.rs
+    ├── render.rs
+    ├── editor.rs
+    └── markdown.rs
 ```
+</details>
+
+<details>
+<summary><b>Building</b></summary>
+
+```bash
+# Development build
+cargo build
+
+# Release build (optimized)
+cargo build --release
+
+# Portable version (bundled SQLite)
+cargo build --release --features bundled
+
+# Run tests
+cargo test
+
+# Format & lint
+cargo fmt
+cargo clippy
+```
+</details>
+
+## Roadmap
+
+### Core Functionality
+- [x] Configuration file
+- [ ] Backup/restore functionality
+
+### TUI Improvements
+- [ ] Tag filtering (filter notes by tag in TUI)
+- [ ] Delete confirmation dialog
+- [ ] Display note ID and creation date in preview
+- [ ] Inline title editing (rename without external editor)
+- [ ] Statistics/dashboard view
+- [ ] Tag management view (list all tags with counts)
 
 ## License
 
@@ -217,17 +301,7 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Roadmap
-
-- [ ] Full markdown support
-- [ ] Tag management UI
-- [ ] Note templates
-- [ ] Full-text search (SQLite FTS5)
-- [ ] Note linking
-- [ ] Configuration file
-- [ ] Backup/restore functionality
+Contributions welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgments
 
