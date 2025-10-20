@@ -9,10 +9,10 @@ use crate::config::DatabaseConfig;
 /// A note with title, content, tags, and timestamps.
 #[derive(Debug, Clone)]
 pub struct Note {
-	pub id: Option<i64>,
-	pub title: String,
-	pub content: String,
-	pub tags: Vec<String>,
+	pub id:         Option<i64>,
+	pub title:      String,
+	pub content:    String,
+	pub tags:       Vec<String>,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
 }

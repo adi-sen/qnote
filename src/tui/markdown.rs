@@ -1,35 +1,65 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::{style::{Color, Modifier, Style}, text::{Line, Span}};
 
-const HEADING1: Color = Color::Cyan;
-const HEADING2: Color = Color::Blue;
-const HEADING3: Color = Color::LightBlue;
-const CODE: Color = Color::Yellow;
-const QUOTE: Color = Color::Gray;
-const LINK: Color = Color::Blue;
-const STRIKE: Color = Color::DarkGray;
+use crate::config::ThemeConfig;
 
-/// Renders markdown to styled lines.
-pub fn markdown_to_lines(markdown: &str) -> Vec<Line<'static>> {
+/// Renders markdown to styled lines using theme colors
+pub fn markdown_to_lines(markdown: &str, theme: &ThemeConfig) -> Vec<Line<'static>> {
 	if markdown.is_empty() {
 		return Vec::new();
 	}
 
 	let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
 	let parser = Parser::new_ext(markdown, opts);
-	Renderer::default().render(parser)
+	Renderer::new(theme).render(parser)
 }
 
-#[derive(Default)]
 struct Renderer {
-	lines:             Vec<Line<'static>>,
-	current_line:      Vec<Span<'static>>,
-	styles:            Vec<Style>,
-	in_code_block:     bool,
-	in_list:           bool,
-	list_level:        usize,
-	in_blockquote:     bool,
-	item_needs_prefix: bool,
+	lines:               Vec<Line<'static>>,
+	current_line:        Vec<Span<'static>>,
+	styles:              Vec<Style>,
+	in_code_block:       bool,
+	in_list:             bool,
+	list_level:          usize,
+	in_blockquote:       bool,
+	item_needs_prefix:   bool,
+	h1_color:            Color,
+	h2_color:            Color,
+	h3_color:            Color,
+	h4_h6_color:         Color,
+	code_color:          Color,
+	code_block_color:    Color,
+	link_color:          Color,
+	emphasis_color:      Color,
+	strong_color:        Color,
+	strikethrough_color: Color,
+	blockquote_color:    Color,
+}
+
+impl Renderer {
+	fn new(theme: &ThemeConfig) -> Self {
+		Self {
+			lines:               Vec::new(),
+			current_line:        Vec::new(),
+			styles:              Vec::new(),
+			in_code_block:       false,
+			in_list:             false,
+			list_level:          0,
+			in_blockquote:       false,
+			item_needs_prefix:   false,
+			h1_color:            *theme.h1,
+			h2_color:            *theme.h2,
+			h3_color:            *theme.h3,
+			h4_h6_color:         *theme.h4_h6,
+			code_color:          *theme.code,
+			code_block_color:    *theme.code_block,
+			link_color:          *theme.link,
+			emphasis_color:      *theme.emphasis,
+			strong_color:        *theme.strong,
+			strikethrough_color: *theme.strikethrough,
+			blockquote_color:    *theme.blockquote,
+		}
+	}
 }
 
 impl Renderer {
@@ -90,22 +120,22 @@ impl Renderer {
 			Tag::Heading { level, .. } => {
 				self.finish_line();
 				let color = match level {
-					HeadingLevel::H1 => HEADING1,
-					HeadingLevel::H2 => HEADING2,
-					HeadingLevel::H3 => HEADING3,
-					_ => Color::Reset,
+					HeadingLevel::H1 => self.h1_color,
+					HeadingLevel::H2 => self.h2_color,
+					HeadingLevel::H3 => self.h3_color,
+					_ => self.h4_h6_color,
 				};
 				self.push_style(Style::default().fg(color).add_modifier(Modifier::BOLD));
 			}
 			Tag::BlockQuote(_) => {
 				self.finish_line();
 				self.in_blockquote = true;
-				self.push_style(Style::default().fg(QUOTE).add_modifier(Modifier::ITALIC));
+				self.push_style(Style::default().fg(self.blockquote_color).add_modifier(Modifier::ITALIC));
 			}
 			Tag::CodeBlock(_) => {
 				self.finish_line();
 				self.in_code_block = true;
-				self.push_style(Style::default().fg(CODE));
+				self.push_style(Style::default().fg(self.code_block_color));
 			}
 			Tag::List(_) => {
 				if !self.in_list {
@@ -118,11 +148,13 @@ impl Renderer {
 				self.finish_line();
 				self.item_needs_prefix = true;
 			}
-			Tag::Strong => self.push_style(Style::default().add_modifier(Modifier::BOLD)),
-			Tag::Emphasis => self.push_style(Style::default().add_modifier(Modifier::ITALIC)),
-			Tag::Strikethrough => self.push_style(Style::default().fg(STRIKE).add_modifier(Modifier::CROSSED_OUT)),
+			Tag::Strong => self.push_style(Style::default().fg(self.strong_color).add_modifier(Modifier::BOLD)),
+			Tag::Emphasis => self.push_style(Style::default().fg(self.emphasis_color).add_modifier(Modifier::ITALIC)),
+			Tag::Strikethrough => {
+				self.push_style(Style::default().fg(self.strikethrough_color).add_modifier(Modifier::CROSSED_OUT))
+			}
 			Tag::Link { .. } => {
-				self.push_style(Style::default().fg(LINK).add_modifier(Modifier::UNDERLINED));
+				self.push_style(Style::default().fg(self.link_color).add_modifier(Modifier::UNDERLINED));
 				self.push_span("[");
 			}
 			Tag::Image { .. } => self.push_span("[Image: "),
@@ -133,7 +165,11 @@ impl Renderer {
 	fn end_tag(&mut self, tag: TagEnd) {
 		match tag {
 			TagEnd::Paragraph if !self.in_list || self.in_blockquote => self.finish_line(),
-			TagEnd::Heading(_) | TagEnd::BlockQuote(_) | TagEnd::CodeBlock => {
+			TagEnd::Heading(_) => {
+				self.finish_line();
+				self.pop_style();
+			}
+			TagEnd::BlockQuote(_) | TagEnd::CodeBlock => {
 				self.pop_style();
 				self.finish_line();
 				if matches!(tag, TagEnd::BlockQuote(_)) {
@@ -179,6 +215,6 @@ impl Renderer {
 	}
 
 	fn inline_code(&mut self, code: String) {
-		self.current_line.push(Span::styled(format!("`{code}`"), Style::default().fg(CODE)));
+		self.current_line.push(Span::styled(format!("`{code}`"), Style::default().fg(self.code_color)));
 	}
 }

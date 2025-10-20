@@ -73,7 +73,7 @@ pub fn open_editor_for_edit(note: &Note, config: &EditorConfig) -> Result<Option
 			if i > 0 {
 				writer.write_all(b" ")?;
 			}
-			write!(writer, "#{tag}")?;
+			write!(writer, "@{tag}")?;
 		}
 	}
 

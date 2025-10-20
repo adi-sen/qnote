@@ -2,15 +2,18 @@ mod database;
 mod defaults;
 mod editor;
 mod keybindings;
+mod theme;
 mod ui;
 
-use std::{fs, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 use anyhow::{Context, Result};
 pub use database::DatabaseConfig;
 pub use editor::EditorConfig;
 pub use keybindings::KeybindingsConfig;
 use serde::{Deserialize, Serialize};
+pub use theme::ThemeConfig;
+use theme::color_to_hex;
 pub use ui::UiConfig;
 
 /// Configuration for the qnote application.
@@ -24,23 +27,27 @@ pub struct Config {
 	pub keybindings: KeybindingsConfig,
 	#[serde(default)]
 	pub database:    DatabaseConfig,
+	#[serde(default)]
+	pub theme:       ThemeConfig,
 }
 
 impl Config {
 	/// Loads configuration from the default config file path.
-	/// Returns default config if file doesn't exist (following convention of bat,
-	/// starship, etc.)
+	/// Auto-generates config with defaults on first run.
 	pub fn load() -> Result<Self> {
 		let config_path = Self::get_config_path()?;
 
 		if !config_path.exists() {
-			// Use defaults without creating a file (standard Rust CLI tool behavior)
-			return Ok(Self::default());
+			let config = Self::default();
+			config.save()?;
+			return Ok(config);
 		}
 
 		let config_str = fs::read_to_string(&config_path).context("Failed to read config file")?;
 
-		toml::from_str(&config_str).context("Failed to parse config file")
+		let config: Self = toml::from_str(&config_str).context("Failed to parse config file")?;
+		config.validate()?;
+		Ok(config)
 	}
 
 	/// Saves the configuration to the default config file path with inline
@@ -65,8 +72,34 @@ impl Config {
 	fn to_toml_with_comments(&self) -> String {
 		format!(
 			r#"# qnote configuration file
-# This file is automatically created on first run
 # Edit this file to customize qnote's behavior
+
+[theme]
+# UI colors
+text = "{text}"
+unselected_text = "{unselected_text}"
+metadata = "{metadata}"
+hover_indicator = "{hover_indicator}"
+selection_indicator = "{selection_indicator}"
+active_indicator = "{active_indicator}"
+search_highlight = "{search_highlight}"
+
+# Markdown headings
+h1 = "{h1}"
+h2 = "{h2}"
+h3 = "{h3}"
+h4_h6 = "{h4_h6}"
+
+# Markdown code
+code = "{code}"
+code_block = "{code_block}"
+
+# Markdown text styles
+link = "{link}"
+emphasis = "{emphasis}"
+strong = "{strong}"
+strikethrough = "{strikethrough}"
+blockquote = "{blockquote}"
 
 [ui]
 # List pane width (0.1-0.9). Example: 0.3 = 30% list, 70% preview
@@ -83,12 +116,19 @@ header_lines = {header_lines}
 max_markdown_formatting_buffer = {max_markdown_formatting_buffer}
 
 [editor]
-# Override $EDITOR environment variable (optional, remove to use $EDITOR)
-{default_editor}# Secure temp files with 0600 permissions (Unix only)
-secure_temp_files = {secure_temp_files}
+{default_editor}{secure_temp_files}
+
+[database]
+# Enable Write-Ahead Logging for better performance (disable for network drives)
+wal_mode = {wal_mode}
+# Database cache size in kilobytes (negative value = KB, positive = pages)
+cache_size_kb = {cache_size_kb}
+# Synchronous mode: OFF, NORMAL, FULL, or EXTRA
+synchronous = "{synchronous}"
+# Temp store: DEFAULT, FILE, or MEMORY
+temp_store = "{temp_store}"
 
 [keybindings]
-# Customize keyboard shortcuts (single characters only)
 quit = "{quit}"
 new_note = "{new_note}"
 delete = "{delete}"
@@ -100,17 +140,25 @@ goto_top = "{goto_top}"
 goto_bottom = "{goto_bottom}"
 move_down = "{move_down}"
 move_up = "{move_up}"
-
-[database]
-# Enable Write-Ahead Logging for better performance (disable for network drives)
-wal_mode = {wal_mode}
-# Database cache size in KB (negative = KB, positive = pages). Default: -64000 (64MB)
-cache_size_kb = {cache_size_kb}
-# Synchronous mode: OFF, NORMAL (default), FULL, or EXTRA
-synchronous = "{synchronous}"
-# Temp store: DEFAULT, FILE, or MEMORY (default)
-temp_store = "{temp_store}"
 "#,
+			text = color_to_hex(&self.theme.text),
+			unselected_text = color_to_hex(&self.theme.unselected_text),
+			metadata = color_to_hex(&self.theme.metadata),
+			hover_indicator = color_to_hex(&self.theme.hover_indicator),
+			selection_indicator = color_to_hex(&self.theme.selection_indicator),
+			active_indicator = color_to_hex(&self.theme.active_indicator),
+			search_highlight = color_to_hex(&self.theme.search_highlight),
+			h1 = color_to_hex(&self.theme.h1),
+			h2 = color_to_hex(&self.theme.h2),
+			h3 = color_to_hex(&self.theme.h3),
+			h4_h6 = color_to_hex(&self.theme.h4_h6),
+			code = color_to_hex(&self.theme.code),
+			code_block = color_to_hex(&self.theme.code_block),
+			link = color_to_hex(&self.theme.link),
+			emphasis = color_to_hex(&self.theme.emphasis),
+			strong = color_to_hex(&self.theme.strong),
+			strikethrough = color_to_hex(&self.theme.strikethrough),
+			blockquote = color_to_hex(&self.theme.blockquote),
 			split_ratio = self.ui.split_ratio,
 			message_display_keypresses = self.ui.message_display_keypresses,
 			preview_scroll_step = self.ui.preview_scroll_step,
@@ -122,7 +170,15 @@ temp_store = "{temp_store}"
 			} else {
 				"# default_editor = \"nvim\"\n".to_string()
 			},
-			secure_temp_files = self.editor.secure_temp_files,
+			secure_temp_files = if self.editor.secure_temp_files {
+				"# secure_temp_files = true\n".to_string()
+			} else {
+				"secure_temp_files = false\n".to_string()
+			},
+			wal_mode = self.database.wal_mode,
+			cache_size_kb = self.database.cache_size_kb,
+			synchronous = self.database.synchronous,
+			temp_store = self.database.temp_store,
 			quit = self.keybindings.quit,
 			new_note = self.keybindings.new_note,
 			delete = self.keybindings.delete,
@@ -134,21 +190,35 @@ temp_store = "{temp_store}"
 			goto_bottom = self.keybindings.goto_bottom,
 			move_down = self.keybindings.move_down,
 			move_up = self.keybindings.move_up,
-			wal_mode = self.database.wal_mode,
-			cache_size_kb = self.database.cache_size_kb,
-			synchronous = self.database.synchronous,
-			temp_store = self.database.temp_store,
 		)
 	}
 
-	/// Returns the platform-specific configuration file path.
-	/// On Unix: ~/.config/qnote/config.toml
-	/// On Windows: %APPDATA%\qnote\config.toml
+	/// Returns the platform-specific configuration file path following XDG spec.
+	/// Priority order:
+	/// 1. $XDG_CONFIG_HOME/qnote/config.toml
+	/// 2. ~/.config/qnote/config.toml (Unix)
+	/// 3. ~/Library/Application Support/qnote/config.toml (macOS fallback)
+	/// 4. %APPDATA%\qnote\config.toml (Windows)
 	pub fn get_config_path() -> Result<PathBuf> {
-		let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-		path.push("qnote");
-		path.push("config.toml");
-		Ok(path)
+		let config_dir = if let Ok(xdg_config) = env::var("XDG_CONFIG_HOME") {
+			// Use XDG_CONFIG_HOME if set
+			PathBuf::from(xdg_config)
+		} else if cfg!(target_os = "macos") {
+			// On macOS, prefer ~/.config but fall back to Application Support
+			let home = dirs::home_dir().context("Failed to get home directory")?;
+			let xdg_path = home.join(".config");
+			if xdg_path.exists() {
+				xdg_path
+			} else {
+				// Fall back to Application Support on macOS
+				dirs::config_dir().unwrap_or_else(|| home.join("Library/Application Support"))
+			}
+		} else {
+			// On other platforms, use standard config dir
+			dirs::config_dir().context("Failed to get config directory")?
+		};
+
+		Ok(config_dir.join("qnote").join("config.toml"))
 	}
 
 	/// Validates the configuration values.

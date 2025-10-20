@@ -18,7 +18,7 @@ pub fn note_to_markdown(note: &Note) -> String {
 	let mut content = note.title.clone();
 
 	if !note.tags.is_empty() {
-		let tags_str = note.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ");
+		let tags_str = note.tags.iter().map(|t| format!("@{t}")).collect::<Vec<_>>().join(" ");
 		content.push('\n');
 		content.push_str(&tags_str);
 	}

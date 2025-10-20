@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::Result;
 use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use ratatui::{crossterm::event::{KeyCode, KeyModifiers}, widgets::ListState};
@@ -64,6 +66,8 @@ pub struct App {
 	pub preview_scroll:  u16,
 	pub sort_mode:       SortMode,
 	pub match_indices:   Vec<Vec<usize>>,
+	pub selected_notes:  HashSet<i64>,
+	pub help_expanded:   bool,
 	fuzzy_matcher:       SkimMatcherV2,
 }
 impl App {
@@ -88,6 +92,8 @@ impl App {
 			preview_scroll: 0,
 			sort_mode: SortMode::UpdatedDesc,
 			match_indices: Vec::new(),
+			selected_notes: HashSet::new(),
+			help_expanded: false,
 			fuzzy_matcher: SkimMatcherV2::default(),
 		})
 	}
@@ -107,7 +113,9 @@ impl App {
 	}
 
 	/// Refreshes notes from database, applying fuzzy search and sort.
+	/// Preserves cursor position where possible.
 	fn refresh_notes(&mut self) -> Result<()> {
+		let current_index = self.list_state.selected();
 		let all_notes = self.db.list_notes()?;
 
 		if self.search_query.is_empty() {
@@ -133,7 +141,16 @@ impl App {
 			self.match_indices = indices_vec;
 		}
 
-		self.list_state.select((!self.notes.is_empty()).then_some(0));
+		// Preserve cursor position, clamping to valid range
+		let new_index = if self.notes.is_empty() {
+			None
+		} else if let Some(idx) = current_index {
+			Some(idx.min(self.notes.len() - 1))
+		} else {
+			Some(0)
+		};
+
+		self.list_state.select(new_index);
 		self.preview_scroll = 0;
 		Ok(())
 	}
@@ -153,12 +170,99 @@ impl App {
 	/// Returns a reference to the currently selected note, if any.
 	pub fn get_selected_note(&self) -> Option<&Note> { self.list_state.selected().and_then(|i| self.notes.get(i)) }
 
-	/// Navigate through notes list (with wrapping)
+	/// Checks if a note is currently selected (for multi-select).
+	pub fn is_note_selected(&self, note_id: i64) -> bool { self.selected_notes.contains(&note_id) }
+
+	/// Toggles selection of the currently highlighted note and navigates down.
+	fn toggle_current_selection(&mut self) {
+		if let Some(note) = self.get_selected_note()
+			&& let Some(id) = note.id
+		{
+			if self.selected_notes.contains(&id) {
+				self.selected_notes.remove(&id);
+			} else {
+				self.selected_notes.insert(id);
+			}
+			// Navigate down after toggling (yazi-style behavior)
+			self.navigate(true);
+		}
+	}
+
+	/// Selects all currently visible notes.
+	fn select_all_notes(&mut self) {
+		for note in &self.notes {
+			if let Some(id) = note.id {
+				self.selected_notes.insert(id);
+			}
+		}
+		let count = self.selected_notes.len();
+		self.set_message(format!("Selected {count} notes"));
+	}
+
+	/// Clears all note selections.
+	fn clear_all_selections(&mut self) {
+		let count = self.selected_notes.len();
+		self.selected_notes.clear();
+		if count > 0 {
+			self.set_message(format!("Cleared {count} selections"));
+		}
+	}
+
+	/// Deletes all selected notes from the database.
+	fn delete_selected_notes(&mut self) -> Result<()> {
+		if self.selected_notes.is_empty() {
+			self.set_message("No notes selected");
+			return Ok(());
+		}
+
+		let count = self.selected_notes.len();
+		for note_id in self.selected_notes.drain() {
+			self.db.delete_note(note_id)?;
+		}
+		self.set_message(format!("Deleted {count} notes"));
+		self.refresh_notes()?;
+		Ok(())
+	}
+
+	/// Exports all selected notes to markdown files.
+	fn export_selected_notes(&mut self) -> Result<()> {
+		if self.selected_notes.is_empty() {
+			self.set_message("No notes selected");
+			return Ok(());
+		}
+
+		let mut success_count = 0;
+		let mut error_count = 0;
+
+		for note in &self.notes {
+			if let Some(id) = note.id
+				&& self.selected_notes.contains(&id)
+			{
+				let filename = format!("{}.md", sanitize_filename(&note.title));
+				let content = note_to_markdown(note);
+
+				match std::fs::write(&filename, &content) {
+					Ok(()) => success_count += 1,
+					Err(_) => error_count += 1,
+				}
+			}
+		}
+
+		let msg = if error_count == 0 {
+			format!("Exported {success_count} notes")
+		} else {
+			format!("Exported {success_count} notes ({error_count} failed)")
+		};
+		self.set_message(msg);
+		self.selected_notes.clear();
+		Ok(())
+	}
+
+	/// Navigate through notes list (without wrapping)
 	fn navigate(&mut self, down: bool) {
 		if !self.notes.is_empty() {
 			let current = self.list_state.selected().unwrap_or(0);
-			let delta = if down { 1 } else { -1 };
-			let new_index = ((current as isize + delta).rem_euclid(self.notes.len() as isize)) as usize;
+			let new_index = if down { (current + 1).min(self.notes.len() - 1) } else { current.saturating_sub(1) };
 			self.list_state.select(Some(new_index));
 			self.preview_scroll = 0;
 		}
@@ -190,8 +294,31 @@ impl App {
 	/// Handles keyboard input in list view mode.
 	#[allow(clippy::too_many_lines)]
 	pub fn handle_list_input(&mut self, key: KeyCode, modifiers: KeyModifiers) -> Result<bool> {
+		if modifiers.contains(KeyModifiers::SHIFT) {
+			match key {
+				KeyCode::Char('A') => {
+					self.select_all_notes();
+					return Ok(false);
+				}
+				KeyCode::Char('C') => {
+					self.clear_all_selections();
+					return Ok(false);
+				}
+				KeyCode::Char('D') => {
+					self.delete_selected_notes()?;
+					return Ok(false);
+				}
+				KeyCode::Char('X') => {
+					self.export_selected_notes()?;
+					return Ok(false);
+				}
+				_ => {}
+			}
+		}
+
 		if modifiers.contains(KeyModifiers::CONTROL) {
 			match key {
+				KeyCode::Char('c') => return Ok(true), // Ctrl+C to quit
 				KeyCode::Char('j') => {
 					self.scroll_preview(true);
 					return Ok(false);
@@ -205,6 +332,12 @@ impl App {
 		}
 
 		match key {
+			KeyCode::Char(' ') => {
+				self.toggle_current_selection();
+			}
+			KeyCode::Char('.') => {
+				self.help_expanded = !self.help_expanded;
+			}
 			KeyCode::Char(c) if c == self.config.keybindings.quit => return Ok(true),
 			KeyCode::Char(c) if c == self.config.keybindings.new_note || c == 'a' => {
 				let msg = match open_editor_for_new_note(&self.config.editor) {
@@ -297,11 +430,25 @@ impl App {
 			KeyCode::Char(c) if c == self.config.keybindings.move_down => self.navigate(true),
 			KeyCode::Char(c) if c == self.config.keybindings.move_up => self.navigate(false),
 			KeyCode::Esc => {
-				if !self.search_query.is_empty() {
+				let had_search = !self.search_query.is_empty();
+				let had_selections = !self.selected_notes.is_empty();
+
+				if had_search {
 					self.search_query.clear();
 					self.input_buffer.clear();
 					self.refresh_notes()?;
+				}
+
+				if had_selections {
+					self.selected_notes.clear();
+				}
+
+				if had_search && had_selections {
+					self.set_message("Cleared search and selections");
+				} else if had_search {
 					self.set_message("Search cleared");
+				} else if had_selections {
+					self.set_message("Selections cleared");
 				}
 			}
 			_ => {}
