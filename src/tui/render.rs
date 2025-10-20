@@ -5,8 +5,6 @@ use super::{app::{App, Screen}, markdown::markdown_to_lines};
 use crate::utils::format_date_short;
 
 // UI layout constants
-const LIST_WIDTH_PERCENT: u16 = 40;
-const PREVIEW_WIDTH_PERCENT: u16 = 60;
 const LIST_BORDER_PADDING: u16 = 4;
 
 const CYAN_BOLD: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
@@ -14,9 +12,25 @@ const CYAN: Style = Style::new().fg(Color::Cyan);
 const DARK_GRAY: Style = Style::new().fg(Color::DarkGray);
 const GRAY: Style = Style::new().fg(Color::Gray);
 
-const HELP_LIST_MODE: &str =
-	"j/k navigate  ^j/k scroll  g/G top/bottom  ⏎ edit  n new  d delete  s sort  x export  / search  ESC clear  q quit";
 const HELP_SEARCH_MODE: &str = "^n/p navigate  ⏎ accept  ESC cancel";
+
+/// Generate dynamic help text based on current keybindings
+fn generate_help_text(app: &App) -> String {
+	let kb = &app.config.keybindings;
+	format!(
+		"{}/{} navigate  ^j/k scroll  {}/{} top/bottom  ⏎ edit  {} new  {} delete  {} sort  {} export  {} search  ESC clear  {} quit",
+		kb.move_down,
+		kb.move_up,
+		kb.goto_top,
+		kb.goto_bottom,
+		kb.new_note,
+		kb.delete,
+		kb.sort,
+		kb.export,
+		kb.search,
+		kb.quit
+	)
+}
 
 pub fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
 	loop {
@@ -68,10 +82,10 @@ fn ui(f: &mut ratatui::Frame, app: &mut App) {
 	}
 }
 
-const fn calculate_footer_height(app: &App, width: u16) -> u16 {
+fn calculate_footer_height(app: &App, width: u16) -> u16 {
 	let help_text = match app.screen {
-		Screen::List => HELP_LIST_MODE,
-		Screen::SearchMode => HELP_SEARCH_MODE,
+		Screen::List => generate_help_text(app),
+		Screen::SearchMode => HELP_SEARCH_MODE.to_string(),
 	};
 	if help_text.len() > width as usize { 2 } else { 1 }
 }
@@ -122,9 +136,14 @@ fn highlight_title(text: &str, indices: &[usize]) -> Vec<Span<'static>> {
 }
 
 fn render_split_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
+	// Calculate split percentages from config (split_ratio is for list pane)
+	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+	let list_percent = (app.config.ui.split_ratio * 100.0) as u16;
+	let preview_percent = 100 - list_percent;
+
 	let chunks = Layout::default()
 		.direction(Direction::Horizontal)
-		.constraints([Constraint::Percentage(LIST_WIDTH_PERCENT), Constraint::Percentage(PREVIEW_WIDTH_PERCENT)])
+		.constraints([Constraint::Percentage(list_percent), Constraint::Percentage(preview_percent)])
 		.split(area);
 
 	render_list(f, app, chunks[0]);
@@ -260,7 +279,7 @@ fn render_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
 			} else {
 				String::new()
 			};
-			format!("{count} notes{sort_info} | {HELP_LIST_MODE}")
+			format!("{count} notes{sort_info} | {}", generate_help_text(app))
 		}
 		Screen::SearchMode => {
 			let found = app.notes.len();

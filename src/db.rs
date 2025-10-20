@@ -3,21 +3,16 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, params};
-use serde::{Deserialize, Serialize};
 
-// Database performance configuration
-const DB_CACHE_SIZE_KB: i32 = -64000; // 64MB cache (negative = KB)
-const DB_JOURNAL_MODE: &str = "WAL";
-const DB_SYNCHRONOUS: &str = "NORMAL";
-const DB_TEMP_STORE: &str = "MEMORY";
+use crate::config::DatabaseConfig;
 
 /// A note with title, content, tags, and timestamps.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Note {
-	pub id:         Option<i64>,
-	pub title:      String,
-	pub content:    String,
-	pub tags:       Vec<String>,
+	pub id: Option<i64>,
+	pub title: String,
+	pub content: String,
+	pub tags: Vec<String>,
 	pub created_at: DateTime<Utc>,
 	pub updated_at: DateTime<Utc>,
 }
@@ -37,14 +32,18 @@ pub struct Database {
 
 impl Database {
 	/// Opens or creates a database with WAL mode and FTS5 support.
-	pub fn new(path: &str) -> Result<Self> {
+	pub fn new(path: &str, config: &DatabaseConfig) -> Result<Self> {
 		let conn = Connection::open(path)?;
 
-		// Enable WAL mode for concurrent reads
-		conn.pragma_update(None, "journal_mode", DB_JOURNAL_MODE)?;
-		conn.pragma_update(None, "synchronous", DB_SYNCHRONOUS)?;
-		conn.pragma_update(None, "cache_size", DB_CACHE_SIZE_KB)?;
-		conn.pragma_update(None, "temp_store", DB_TEMP_STORE)?;
+		// Configure database performance settings
+		if config.wal_mode {
+			conn.pragma_update(None, "journal_mode", "WAL")?;
+		} else {
+			conn.pragma_update(None, "journal_mode", "DELETE")?;
+		}
+		conn.pragma_update(None, "synchronous", &config.synchronous)?;
+		conn.pragma_update(None, "cache_size", config.cache_size_kb)?;
+		conn.pragma_update(None, "temp_store", &config.temp_store)?;
 
 		let db = Self { conn };
 		db.init_schema()?;

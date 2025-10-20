@@ -3,14 +3,7 @@ use fuzzy_matcher::{FuzzyMatcher, skim::SkimMatcherV2};
 use ratatui::{crossterm::event::{KeyCode, KeyModifiers}, widgets::ListState};
 
 use super::editor::{open_editor_for_edit, open_editor_for_new_note};
-use crate::{db::{Database, Note}, utils::{note_to_markdown, sanitize_filename}};
-
-// Constants for UI behavior
-const MESSAGE_DISPLAY_KEYPRESSES: u8 = 5;
-const PREVIEW_SCROLL_STEP: u16 = 3;
-const PREVIEW_MAX_SCROLL_BUFFER: u16 = 10;
-const HEADER_LINES: u16 = 3; // title + metadata + blank line
-const MAX_MARKDOWN_FORMATTING_BUFFER: u16 = 10;
+use crate::{config::Config, db::{Database, Note}, utils::{note_to_markdown, sanitize_filename}};
 
 /// Current UI screen mode.
 #[derive(PartialEq, Eq)]
@@ -59,6 +52,7 @@ impl SortMode {
 /// TUI application state.
 pub struct App {
 	pub db:              Database,
+	pub config:          Config,
 	pub screen:          Screen,
 	pub notes:           Vec<Note>,
 	pub list_state:      ListState,
@@ -73,7 +67,7 @@ pub struct App {
 	fuzzy_matcher:       SkimMatcherV2,
 }
 impl App {
-	pub fn new(db: Database) -> Result<Self> {
+	pub fn new(db: Database, config: Config) -> Result<Self> {
 		let notes = db.list_notes()?;
 		let mut list_state = ListState::default();
 		if !notes.is_empty() {
@@ -82,6 +76,7 @@ impl App {
 
 		Ok(Self {
 			db,
+			config,
 			screen: Screen::List,
 			notes,
 			list_state,
@@ -100,7 +95,7 @@ impl App {
 	/// Sets a status message that auto-clears after a few keypresses.
 	fn set_message(&mut self, msg: impl Into<String>) {
 		self.message = Some(msg.into());
-		self.message_counter = MESSAGE_DISPLAY_KEYPRESSES;
+		self.message_counter = self.config.ui.message_display_keypresses;
 	}
 
 	/// Decrements message counter and clears when it reaches zero.
@@ -175,9 +170,9 @@ impl App {
 			#[allow(clippy::cast_possible_truncation)]
 			let lines = note.content.lines().count() as u16;
 			#[allow(clippy::cast_possible_truncation)]
-			let headers = (note.content.matches('#').count() as u16).min(MAX_MARKDOWN_FORMATTING_BUFFER);
+			let headers = (note.content.matches('#').count() as u16).min(self.config.ui.max_markdown_formatting_buffer);
 
-			HEADER_LINES + lines + headers
+			self.config.ui.header_lines + lines + headers
 		})
 	}
 
@@ -185,10 +180,10 @@ impl App {
 	fn scroll_preview(&mut self, down: bool) {
 		if down {
 			let content_height = self.get_preview_content_height();
-			let max_scroll = content_height.saturating_sub(PREVIEW_MAX_SCROLL_BUFFER);
-			self.preview_scroll = (self.preview_scroll + PREVIEW_SCROLL_STEP).min(max_scroll);
+			let max_scroll = content_height.saturating_sub(self.config.ui.preview_max_scroll_buffer);
+			self.preview_scroll = (self.preview_scroll + self.config.ui.preview_scroll_step).min(max_scroll);
 		} else {
-			self.preview_scroll = self.preview_scroll.saturating_sub(PREVIEW_SCROLL_STEP);
+			self.preview_scroll = self.preview_scroll.saturating_sub(self.config.ui.preview_scroll_step);
 		}
 	}
 
@@ -210,9 +205,9 @@ impl App {
 		}
 
 		match key {
-			KeyCode::Char('q') => return Ok(true),
-			KeyCode::Char('n' | 'a') => {
-				let msg = match open_editor_for_new_note() {
+			KeyCode::Char(c) if c == self.config.keybindings.quit => return Ok(true),
+			KeyCode::Char(c) if c == self.config.keybindings.new_note || c == 'a' => {
+				let msg = match open_editor_for_new_note(&self.config.editor) {
 					Ok(Some((title, content, tags))) => {
 						self.db.create_note(&Note::new(title, content, tags))?;
 						self.refresh_notes()?;
@@ -223,7 +218,7 @@ impl App {
 				self.set_message(msg);
 				self.needs_clear = true;
 			}
-			KeyCode::Char('d') => {
+			KeyCode::Char(c) if c == self.config.keybindings.delete => {
 				if let Some(note) = self.get_selected_note()
 					&& let Some(id) = note.id
 				{
@@ -233,13 +228,13 @@ impl App {
 					self.refresh_notes()?;
 				}
 			}
-			KeyCode::Char('s') => {
+			KeyCode::Char(c) if c == self.config.keybindings.sort => {
 				self.sort_mode = self.sort_mode.next();
 				self.refresh_notes()?;
 				let sort_name = self.sort_mode.name();
 				self.set_message(format!("Sort: {sort_name}"));
 			}
-			KeyCode::Char('x') => {
+			KeyCode::Char(c) if c == self.config.keybindings.export => {
 				if let Some(note) = self.get_selected_note() {
 					let filename = format!("{}.md", sanitize_filename(&note.title));
 					let content = note_to_markdown(note);
@@ -251,11 +246,11 @@ impl App {
 					self.set_message(msg);
 				}
 			}
-			KeyCode::Char('e') | KeyCode::Enter => {
+			KeyCode::Char(c) if c == self.config.keybindings.edit => {
 				if let Some(note) = self.get_selected_note().cloned()
 					&& let Some(id) = note.id
 				{
-					match open_editor_for_edit(&note) {
+					match open_editor_for_edit(&note, &self.config.editor) {
 						Ok(Some((title, content, tags))) => {
 							self.db.update_note(id, &title, &content, &tags)?;
 							self.set_message("Note saved");
@@ -266,24 +261,41 @@ impl App {
 					self.needs_clear = true;
 				}
 			}
-			KeyCode::Char('/') => {
+			KeyCode::Enter => {
+				if let Some(note) = self.get_selected_note().cloned()
+					&& let Some(id) = note.id
+				{
+					match open_editor_for_edit(&note, &self.config.editor) {
+						Ok(Some((title, content, tags))) => {
+							self.db.update_note(id, &title, &content, &tags)?;
+							self.set_message("Note saved");
+							self.refresh_notes()?;
+						}
+						_ => self.set_message("Cancelled"),
+					}
+					self.needs_clear = true;
+				}
+			}
+			KeyCode::Char(c) if c == self.config.keybindings.search => {
 				self.screen = Screen::SearchMode;
 				self.input_buffer = self.search_query.clone();
 			}
-			KeyCode::Char('g') => {
+			KeyCode::Char(c) if c == self.config.keybindings.goto_top => {
 				if !self.notes.is_empty() {
 					self.list_state.select(Some(0));
 					self.preview_scroll = 0;
 				}
 			}
-			KeyCode::Char('G') => {
+			KeyCode::Char(c) if c == self.config.keybindings.goto_bottom => {
 				if !self.notes.is_empty() {
 					self.list_state.select(Some(self.notes.len() - 1));
 					self.preview_scroll = 0;
 				}
 			}
-			KeyCode::Down | KeyCode::Char('j') => self.navigate(true),
-			KeyCode::Up | KeyCode::Char('k') => self.navigate(false),
+			KeyCode::Down => self.navigate(true),
+			KeyCode::Up => self.navigate(false),
+			KeyCode::Char(c) if c == self.config.keybindings.move_down => self.navigate(true),
+			KeyCode::Char(c) if c == self.config.keybindings.move_up => self.navigate(false),
 			KeyCode::Esc => {
 				if !self.search_query.is_empty() {
 					self.search_query.clear();

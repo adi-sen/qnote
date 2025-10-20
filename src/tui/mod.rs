@@ -9,16 +9,16 @@ use anyhow::Result;
 pub use app::App;
 use ratatui::{Terminal, backend::CrosstermBackend, crossterm::{event::DisableMouseCapture, execute, terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode}}};
 
-use crate::db::Database;
+use crate::{config::Config, db::Database};
 
-pub fn run_tui(db: Database) -> Result<()> {
+pub fn run_tui(db: Database, config: Config) -> Result<()> {
 	enable_raw_mode()?;
 	let mut stdout = io::stdout();
 	execute!(stdout, EnterAlternateScreen)?;
 	let backend = CrosstermBackend::new(stdout);
 	let mut terminal = Terminal::new(backend)?;
 
-	let mut app = App::new(db)?;
+	let mut app = App::new(db, config)?;
 	let res = render::run_app(&mut terminal, &mut app);
 
 	disable_raw_mode()?;
