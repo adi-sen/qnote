@@ -174,6 +174,28 @@ qnote stats
 # ==================================================
 ```
 
+### Configuration
+
+```bash
+# Generate default configuration file
+qnote config
+# Generates: ~/.config/qnote/config.toml (Linux/BSD)
+#            ~/Library/Application Support/qnote/config.toml (macOS)
+#            %APPDATA%\qnote\config.toml (Windows)
+
+# View current configuration
+qnote config --show
+
+# After generating, edit with your preferred editor
+$EDITOR ~/.config/qnote/config.toml
+
+# Config options include:
+# - UI settings (split ratio, scroll speed, colors)
+# - Keybindings (customize all TUI shortcuts)
+# - Editor preferences (default editor, temp file security)
+# - Database settings (WAL mode, cache size, performance tuning)
+```
+
 ## fzf Integration
 
 The `--oneline` format is designed for piping to fzf and other tools:

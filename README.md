@@ -69,6 +69,8 @@ cargo install --path . --features bundled  # Portable version
 
 ### CLI Commands
 
+> **[See full CLI examples and scripting guide](CLI_EXAMPLES.md)**
+
 <details>
 <summary><b>Basic Operations</b></summary>
 

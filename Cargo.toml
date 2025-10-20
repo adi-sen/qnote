@@ -1,6 +1,6 @@
 [package]
 name = "qnote"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2024"
 authors = ["adi-sen"]
 description = "A fast, lightweight terminal-based note-taking application"
