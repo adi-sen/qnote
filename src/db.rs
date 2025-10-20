@@ -36,11 +36,7 @@ impl Database {
 		let conn = Connection::open(path)?;
 
 		// Configure database performance settings
-		if config.wal_mode {
-			conn.pragma_update(None, "journal_mode", "WAL")?;
-		} else {
-			conn.pragma_update(None, "journal_mode", "DELETE")?;
-		}
+		conn.pragma_update(None, "journal_mode", if config.wal_mode { "WAL" } else { "DELETE" })?;
 		conn.pragma_update(None, "synchronous", &config.synchronous)?;
 		conn.pragma_update(None, "cache_size", config.cache_size_kb)?;
 		conn.pragma_update(None, "temp_store", &config.temp_store)?;
@@ -55,14 +51,20 @@ impl Database {
 		let tags_json: String = row.get(3)?;
 		let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
 
-		let created_at = DateTime::parse_from_rfc3339(&row.get::<_, String>(4)?)
-			.map_err(|e| rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, Box::new(e)))?
-			.with_timezone(&Utc);
-		let updated_at = DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-			.map_err(|e| rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(e)))?
-			.with_timezone(&Utc);
+		let parse_datetime = |idx: usize| -> rusqlite::Result<DateTime<Utc>> {
+			DateTime::parse_from_rfc3339(&row.get::<_, String>(idx)?)
+				.map(|dt| dt.with_timezone(&Utc))
+				.map_err(|e| rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, Box::new(e)))
+		};
 
-		Ok(Note { id: Some(row.get(0)?), title: row.get(1)?, content: row.get(2)?, tags, created_at, updated_at })
+		Ok(Note {
+			id: Some(row.get(0)?),
+			title: row.get(1)?,
+			content: row.get(2)?,
+			tags,
+			created_at: parse_datetime(4)?,
+			updated_at: parse_datetime(5)?,
+		})
 	}
 
 	/// Initializes database schema with FTS5 triggers (idempotent).
@@ -113,11 +115,7 @@ impl Database {
 
 		// Rebuild FTS index if empty (migration case)
 		let notes_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))?;
-		let fts_count: i64 = match self.conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0)) {
-			Ok(count) => count,
-			Err(rusqlite::Error::QueryReturnedNoRows) => 0,
-			Err(e) => return Err(e.into()),
-		};
+		let fts_count: i64 = self.conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |row| row.get(0)).unwrap_or(0);
 
 		if notes_count > 0 && fts_count == 0 {
 			self
@@ -132,9 +130,8 @@ impl Database {
 	pub fn create_note(&self, note: &Note) -> Result<i64> {
 		let tags_json = serde_json::to_string(&note.tags)?;
 		self.conn.execute(
-			"INSERT INTO notes (title, content, tags, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-			params![&note.title, &note.content, &tags_json, &note.created_at.to_rfc3339(), &note.updated_at.to_rfc3339(),],
+			"INSERT INTO notes (title, content, tags, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+			params![&note.title, &note.content, &tags_json, &note.created_at.to_rfc3339(), &note.updated_at.to_rfc3339()],
 		)?;
 		Ok(self.conn.last_insert_rowid())
 	}
@@ -144,10 +141,8 @@ impl Database {
 		let mut stmt =
 			self.conn.prepare("SELECT id, title, content, tags, created_at, updated_at FROM notes WHERE id = ?1")?;
 
-		let note = stmt.query_row(params![id], Self::row_to_note);
-
-		match note {
-			Ok(n) => Ok(Some(n)),
+		match stmt.query_row(params![id], Self::row_to_note) {
+			Ok(note) => Ok(Some(note)),
 			Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
 			Err(e) => Err(e.into()),
 		}
@@ -159,19 +154,15 @@ impl Database {
 			.conn
 			.prepare("SELECT id, title, content, tags, created_at, updated_at FROM notes ORDER BY updated_at DESC")?;
 
-		let notes = stmt.query_map([], Self::row_to_note)?.collect::<Result<Vec<Note>, rusqlite::Error>>()?;
-
-		Ok(notes)
+		Ok(stmt.query_map([], Self::row_to_note)?.collect::<Result<Vec<_>, _>>()?)
 	}
 
 	/// Updates a note's title, content, and tags.
 	pub fn update_note(&self, id: i64, title: &str, content: &str, tags: &[String]) -> Result<()> {
 		let tags_json = serde_json::to_string(tags)?;
-		let updated_at = Utc::now();
-
 		self.conn.execute(
 			"UPDATE notes SET title = ?1, content = ?2, tags = ?3, updated_at = ?4 WHERE id = ?5",
-			params![title, content, &tags_json, &updated_at.to_rfc3339(), id],
+			params![title, content, &tags_json, &Utc::now().to_rfc3339(), id],
 		)?;
 		Ok(())
 	}
@@ -197,9 +188,6 @@ impl Database {
              ORDER BY updated_at DESC",
 		)?;
 
-		let notes =
-			stmt.query_map(params![&search_pattern], Self::row_to_note)?.collect::<Result<Vec<Note>, rusqlite::Error>>()?;
-
-		Ok(notes)
+		Ok(stmt.query_map(params![&search_pattern], Self::row_to_note)?.collect::<Result<Vec<_>, _>>()?)
 	}
 }

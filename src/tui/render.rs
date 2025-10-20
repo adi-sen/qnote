@@ -4,19 +4,14 @@ use ratatui::{Terminal, crossterm::event::{self, Event, KeyEventKind}, layout::{
 use super::{app::{App, Screen}, markdown::markdown_to_lines};
 use crate::{db::Note, utils::format_date_short};
 
-// UI layout constants
 const LIST_BORDER_PADDING: u16 = 4;
 const UI_PADDING: u16 = 1;
-
 const HELP_SEARCH_MODE: &str = "^n/p navigate  ⏎ accept  ESC cancel";
 
-/// Generate complete help text (all commands)
 fn generate_help_text(app: &App) -> String {
 	let kb = &app.config.keybindings;
-	let selected_count = app.selected_notes.len();
-
-	let batch_ops = if selected_count > 0 {
-		format!("⇧D batch delete ({})  ⇧X batch export ({})  ⇧C clear", selected_count, selected_count)
+	let batch_ops = if !app.selection.is_empty() {
+		format!("⇧D batch delete ({})  ⇧X batch export ({})  ⇧C clear", app.selection.len(), app.selection.len())
 	} else {
 		"⇧A select all  ⇧C clear".to_string()
 	};
@@ -64,18 +59,12 @@ pub fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &m
 }
 
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
-	// Apply horizontal padding only (left/right)
 	let padded_area = f.area().inner(Margin { horizontal: UI_PADDING, vertical: 0 });
-
 	let has_message = app.message.is_some();
 	let footer_height = calculate_footer_height(app, padded_area.width);
 
 	let constraints = if has_message {
-		vec![
-			Constraint::Min(0),
-			Constraint::Length(1), // Status bar
-			Constraint::Length(footer_height),
-		]
+		vec![Constraint::Min(0), Constraint::Length(1), Constraint::Length(footer_height)]
 	} else {
 		vec![Constraint::Min(0), Constraint::Length(footer_height)]
 	};
@@ -97,22 +86,18 @@ fn calculate_footer_height(app: &App, width: u16) -> u16 {
 	}
 
 	if app.help_expanded {
-		// Calculate how many lines the help text will take when wrapped
 		let help_text = generate_help_text(app);
 		let available_width = width as usize;
-
 		if help_text.len() <= available_width {
-			// Fits on one line
 			1
 		} else {
-			// Estimate number of lines needed (word-wrapped)
 			let mut lines = 1;
 			let mut remaining = help_text.len();
 			while remaining > available_width {
 				lines += 1;
 				remaining = remaining.saturating_sub(available_width);
 			}
-			lines.min(3) // Cap at 3 lines to prevent taking too much space
+			lines.min(3)
 		}
 	} else {
 		1
@@ -121,19 +106,17 @@ fn calculate_footer_height(app: &App, width: u16) -> u16 {
 
 fn render_status_bar(f: &mut ratatui::Frame, app: &App, area: Rect) {
 	if let Some(msg) = &app.message {
-		let status = Paragraph::new(msg.as_str()).style(Style::default().fg(Color::Yellow));
-		f.render_widget(status, area);
+		f.render_widget(Paragraph::new(msg.as_str()).style(Style::default().fg(Color::Yellow)), area);
 	}
 }
 
-/// Simple highlighting for matched characters in title.
 fn highlight_title(text: &str, indices: &[usize], theme: &crate::config::ThemeConfig) -> Vec<Span<'static>> {
 	if indices.is_empty() {
 		return vec![Span::raw(text.to_string())];
 	}
 
 	let chars: Vec<char> = text.chars().collect();
-	let mut spans = Vec::with_capacity(indices.len() * 2 + 1);
+	let mut spans = Vec::new();
 	let mut sorted_indices = indices.to_vec();
 	sorted_indices.sort_unstable();
 	sorted_indices.dedup();
@@ -145,41 +128,33 @@ fn highlight_title(text: &str, indices: &[usize], theme: &crate::config::ThemeCo
 		if idx >= chars.len() {
 			break;
 		}
-
 		if idx > last_idx {
-			let segment: String = chars[last_idx..idx].iter().collect();
-			spans.push(Span::raw(segment));
+			spans.push(Span::raw(chars[last_idx..idx].iter().collect::<String>()));
 		}
-
-		let ch: String = chars[idx].to_string();
-		spans.push(Span::styled(ch, highlight_style));
+		spans.push(Span::styled(chars[idx].to_string(), highlight_style));
 		last_idx = idx + 1;
 	}
 
 	if last_idx < chars.len() {
-		let segment: String = chars[last_idx..].iter().collect();
-		spans.push(Span::raw(segment));
+		spans.push(Span::raw(chars[last_idx..].iter().collect::<String>()));
 	}
 
 	spans
 }
 
 fn render_split_view(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
-	// Calculate split percentages from config (split_ratio is for list pane)
 	#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 	let list_percent = (app.config.ui.split_ratio * 100.0) as u16;
-	let preview_percent = 100 - list_percent;
 
 	let chunks = Layout::default()
 		.direction(Direction::Horizontal)
-		.constraints([Constraint::Percentage(list_percent), Constraint::Percentage(preview_percent)])
+		.constraints([Constraint::Percentage(list_percent), Constraint::Percentage(100 - list_percent)])
 		.split(area);
 
 	render_list(f, app, chunks[0]);
 	render_preview(f, app, chunks[1]);
 }
 
-/// Parameters for creating a list item
 struct ListItemParams<'a> {
 	note:          &'a Note,
 	idx:           usize,
@@ -191,15 +166,13 @@ struct ListItemParams<'a> {
 	theme:         &'a crate::config::ThemeConfig,
 }
 
-/// Renders a list item with state-based styling and indicator
 fn create_list_item(params: ListItemParams) -> ListItem<'static> {
 	let ListItemParams { note, idx, is_hovered, is_selected, has_search, match_indices, list_width, theme } = params;
 	let date_str = format_date_short(&note.updated_at);
-	let date_width = date_str.len();
 	let clean_title = note.title.trim_start_matches('#').trim().to_string();
 
-	const INDICATOR_WIDTH: usize = 2; // "▎ " or "  "
-	let available_width = list_width.saturating_sub(date_width + INDICATOR_WIDTH + 1);
+	const INDICATOR_WIDTH: usize = 2;
+	let available_width = list_width.saturating_sub(date_str.len() + INDICATOR_WIDTH + 1);
 
 	let title_display = if clean_title.len() > available_width {
 		format!("{}…", &clean_title[..available_width.saturating_sub(1)])
@@ -207,11 +180,9 @@ fn create_list_item(params: ListItemParams) -> ListItem<'static> {
 		clean_title.clone()
 	};
 
-	// Apply search highlighting if applicable
 	let title_spans = if has_search && idx < match_indices.len() {
 		let title_len = note.title.chars().count();
-		let title_indices: Vec<usize> = match_indices[idx].iter().filter_map(|&i| (i < title_len).then_some(i)).collect();
-
+		let title_indices: Vec<usize> = match_indices[idx].iter().copied().filter(|&i| i < title_len).collect();
 		if title_indices.is_empty() {
 			vec![Span::raw(title_display.clone())]
 		} else {
@@ -223,11 +194,7 @@ fn create_list_item(params: ListItemParams) -> ListItem<'static> {
 
 	let spacing = " ".repeat(available_width.saturating_sub(title_display.len()));
 
-	// Build line with state-based indicator and colors
-	let mut spans = vec![];
-
-	// Add quarter block indicator
-	let indicator = if is_hovered && is_selected {
+	let mut spans = vec![if is_hovered && is_selected {
 		Span::styled("▎ ", Style::default().fg(*theme.active_indicator).add_modifier(Modifier::BOLD))
 	} else if is_hovered {
 		Span::styled("▎ ", Style::default().fg(*theme.hover_indicator).add_modifier(Modifier::BOLD))
@@ -235,24 +202,17 @@ fn create_list_item(params: ListItemParams) -> ListItem<'static> {
 		Span::styled("▎ ", Style::default().fg(*theme.selection_indicator).add_modifier(Modifier::BOLD))
 	} else {
 		Span::raw("  ")
-	};
-	spans.push(indicator);
+	}];
 
-	// Apply text color based on state
 	let text_color = if is_selected || is_hovered { theme.text } else { theme.unselected_text };
-	let search_color = theme.search_highlight;
-	let styled_title: Vec<Span> = title_spans
-		.into_iter()
-		.map(|span| {
-			if span.style.fg == Some(*search_color) {
-				span // Preserve search highlights
-			} else {
-				Span::styled(span.content, Style::default().fg(*text_color))
-			}
-		})
-		.collect();
+	spans.extend(title_spans.into_iter().map(|span| {
+		if span.style.fg == Some(*theme.search_highlight) {
+			span
+		} else {
+			Span::styled(span.content, Style::default().fg(*text_color))
+		}
+	}));
 
-	spans.extend(styled_title);
 	spans.push(Span::raw(spacing));
 	spans.push(Span::styled(date_str, Style::default().fg(*theme.metadata)));
 
@@ -261,7 +221,7 @@ fn create_list_item(params: ListItemParams) -> ListItem<'static> {
 
 fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 	let list_width = area.width.saturating_sub(LIST_BORDER_PADDING) as usize;
-	let has_search = !app.search_query.is_empty();
+	let has_search = app.search.is_active();
 	let current_idx = app.list_state.selected();
 	let theme = &app.config.theme;
 
@@ -270,43 +230,33 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 		.iter()
 		.enumerate()
 		.map(|(idx, note)| {
-			let is_selected = note.id.is_some_and(|id| app.is_note_selected(id));
-			let is_hovered = current_idx == Some(idx);
 			create_list_item(ListItemParams {
 				note,
 				idx,
-				is_hovered,
-				is_selected,
+				is_hovered: current_idx == Some(idx),
+				is_selected: note.id.is_some_and(|id| app.is_note_selected(id)),
 				has_search,
-				match_indices: &app.match_indices,
+				match_indices: &app.search.match_indices,
 				list_width,
 				theme,
 			})
 		})
 		.collect();
 
-	// Dynamic title based on search mode
 	let title = if app.screen == Screen::SearchMode {
-		let input = &app.input_buffer;
-		format!("Search: {input}_")
-	} else if app.search_query.is_empty() {
-		"Notes".to_string()
+		format!("Search: {}_", app.search.input_buffer)
+	} else if app.search.is_active() {
+		format!("Notes (search: {})", app.search.query)
 	} else {
-		let query = &app.search_query;
-		format!("Notes (search: {query})")
+		"Notes".to_string()
 	};
 
-	// Build title_bottom with essential stats
-	let count = app.notes.len();
-	let selected_count = app.selected_notes.len();
-
-	let stats = if selected_count > 0 {
-		format!("{} notes • {} selected", count, selected_count)
-	} else if !app.search_query.is_empty() {
-		format!("{} matches", count)
+	let stats = if !app.selection.is_empty() {
+		format!("{} notes • {} selected", app.notes.len(), app.selection.len())
+	} else if app.search.is_active() {
+		format!("{} matches", app.notes.len())
 	} else {
-		let sort_name = app.sort_mode.name();
-		format!("{} notes • {}", count, sort_name)
+		format!("{} notes • {}", app.notes.len(), app.sort_mode.name())
 	};
 
 	let title_style =
@@ -328,23 +278,17 @@ fn render_list(f: &mut ratatui::Frame, app: &mut App, area: Rect) {
 
 fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
 	let theme = &app.config.theme;
+	let overlay_color = Style::default().fg(*theme.metadata);
 
 	if let Some(note) = app.get_selected_note() {
-		// Build metadata line
 		let metadata = if note.tags.is_empty() {
 			format_date_short(&note.updated_at)
 		} else {
-			let tags = note.tags.join(", ");
-			let updated = format_date_short(&note.updated_at);
-			format!("{tags} • {updated}")
+			format!("{} • {}", note.tags.join(", "), format_date_short(&note.updated_at))
 		};
 
-		// Strip markdown from title for display
 		let clean_title = note.title.trim_start_matches('#').trim();
-
-		// Build content with title and body, adding left padding
 		let teal_bold = Style::default().fg(*theme.hover_indicator).add_modifier(Modifier::BOLD);
-		let overlay_color = Style::default().fg(*theme.metadata);
 
 		let content_lines = vec![
 			Line::from(vec![Span::raw("  "), Span::styled(clean_title, teal_bold)]),
@@ -353,19 +297,16 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
 		]
 		.into_iter()
 		.chain(markdown_to_lines(&note.content, theme).into_iter().map(|line| {
-			// Add left padding to each markdown line
 			let mut padded_spans = vec![Span::raw("  ")];
 			padded_spans.extend(line.spans);
 			Line::from(padded_spans)
 		}))
 		.collect::<Vec<_>>();
 
-		// Build title with note position and scroll indicator
 		let note_idx = app.list_state.selected().unwrap_or(0) + 1;
-		let total_notes = app.notes.len();
 		#[allow(clippy::cast_possible_truncation)]
 		let content_height = content_lines.len() as u16;
-		let visible_height = area.height.saturating_sub(3); // Subtract borders and padding
+		let visible_height = area.height.saturating_sub(3);
 
 		let scroll_indicator = if app.preview_scroll > 0 {
 			let max_scroll = content_height.saturating_sub(visible_height);
@@ -375,79 +316,60 @@ fn render_preview(f: &mut ratatui::Frame, app: &App, area: Rect) {
 			String::new()
 		};
 
-		let title = format!("Preview{}", scroll_indicator);
-		let title_bottom = format!("{}/{}", note_idx, total_notes);
-
 		let block = Block::default()
 			.borders(Borders::ALL)
 			.border_set(border::ROUNDED)
-			.title(Span::styled(title, Style::default()))
-			.title_bottom(Span::styled(title_bottom, overlay_color));
+			.title(format!("Preview{}", scroll_indicator))
+			.title_bottom(Span::styled(format!("{}/{}", note_idx, app.notes.len()), overlay_color));
 
-		let preview = Paragraph::new(content_lines).block(block).scroll((app.preview_scroll, 0)).wrap(Wrap { trim: false });
-		f.render_widget(preview, area);
+		f.render_widget(
+			Paragraph::new(content_lines).block(block).scroll((app.preview_scroll, 0)).wrap(Wrap { trim: false }),
+			area,
+		);
 	} else {
-		let overlay_color = Style::default().fg(*theme.metadata);
-		let empty = Paragraph::new("No note selected")
-			.block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
-			.style(overlay_color);
-		f.render_widget(empty, area);
+		f.render_widget(
+			Paragraph::new("No note selected")
+				.block(Block::default().borders(Borders::ALL).border_set(border::ROUNDED).title("Preview"))
+				.style(overlay_color),
+			area,
+		);
 	}
 }
 
 fn render_help(f: &mut ratatui::Frame, app: &App, area: Rect) {
-	let mut lines = Vec::new();
-	let available_width = area.width as usize;
 	let theme = &app.config.theme;
 	let help_color = Style::default().fg(*theme.metadata);
 
-	match app.screen {
+	let lines = match app.screen {
 		Screen::List => {
 			let help_text = generate_help_text(app);
+			let available_width = area.width as usize;
 
 			if !app.help_expanded {
-				// When collapsed, check if it fits, otherwise add ". more" indicator
 				if help_text.len() <= available_width {
-					// Text fits completely - no need for ". more"
-					lines.push(Line::from(Span::styled(help_text, help_color)));
+					vec![Line::from(Span::styled(help_text, help_color))]
 				} else {
-					// Text is truncated - add ". more" to indicate expandability
-					let more_indicator = " . more";
-					let truncate_at = available_width.saturating_sub(more_indicator.len());
-
-					// Find last space before truncation point for clean break
+					let truncate_at = available_width.saturating_sub(7);
 					let break_point = help_text[..truncate_at.min(help_text.len())].rfind(' ').unwrap_or(truncate_at);
-
-					let truncated = format!("{}{}", &help_text[..break_point], more_indicator);
-					lines.push(Line::from(Span::styled(truncated, help_color)));
+					vec![Line::from(Span::styled(format!("{} . more", &help_text[..break_point]), help_color))]
 				}
 			} else {
-				// When expanded, show full help text wrapped across multiple lines
-				// Split intelligently at word boundaries
+				let mut lines = Vec::new();
 				let mut remaining = help_text.as_str();
 				while !remaining.is_empty() {
 					if remaining.len() <= available_width {
-						// Last line - fits completely
 						lines.push(Line::from(Span::styled(remaining.to_string(), help_color)));
 						break;
-					} else {
-						// Find last space before width limit for clean word wrap
-						let split_at = remaining[..available_width.min(remaining.len())].rfind(' ').unwrap_or(available_width);
-
-						let line_text = &remaining[..split_at];
-						lines.push(Line::from(Span::styled(line_text.to_string(), help_color)));
-
-						// Move to next line, skipping the space
-						remaining = remaining[split_at..].trim_start();
 					}
+					let split_at = remaining[..available_width.min(remaining.len())].rfind(' ').unwrap_or(available_width);
+					lines.push(Line::from(Span::styled(remaining[..split_at].to_string(), help_color)));
+					remaining = remaining[split_at..].trim_start();
 				}
+				lines
 			}
 		}
-		Screen::SearchMode => {
-			lines.push(Line::from(Span::styled(HELP_SEARCH_MODE.to_string(), help_color)));
-		}
-	}
+		Screen::SearchMode => vec![Line::from(Span::styled(HELP_SEARCH_MODE, help_color))],
+	};
 
-	let help = Paragraph::new(lines).alignment(Alignment::Center);
-	f.render_widget(help, area);
+	f.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
 }

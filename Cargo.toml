@@ -1,12 +1,12 @@
 [package]
 name = "qnote"
-version = "1.0.2"
+version = "1.1.0"
 edition = "2024"
 authors = ["adi-sen"]
 description = "A fast, lightweight terminal-based note-taking application"
 repository = "https://github.com/adi-sen/qnote"
 license = "MIT"
-keywords = ["notes", "tui", "terminal", "markdown", "cli"]
+keywords = ["notes", "ratatui", "terminal", "markdown", "cli", "tui"]
 categories = ["command-line-utilities", "text-editors"]
 readme = "README.md"
 
